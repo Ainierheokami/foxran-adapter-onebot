@@ -1,0 +1,45 @@
+# =================== OneBot v11 配置 ===================
+enabled: true  # 是否启用 OneBot v11 适配器（正向/反向都受此开关影响）
+
+# 连接模式:
+# - forward: 本服务作为客户端主动连接 OneBot WS
+# - reverse: OneBot 作为客户端反向连接到本服务的 WS 端点
+# - both: 同时开启 forward 与 reverse
+connection_mode: "forward"
+
+# 正向连接地址（仅 forward/both 生效）
+ws_url: "ws://127.0.0.1:8080"
+
+# 访问令牌（forward: 可放 URL 或 Header；reverse: OneBot 端携带 token）
+access_token: ""  # Auto-generated on first init if left empty
+access_token_in_url: true  # true: URL 携带 access_token；false: Header Bearer
+
+# 内部平台名（用于消息处理器选择适配器）
+platform_name: "onebot"
+
+# 会话ID前缀（用于区分不同平台的会话）
+session_id_prefix: "onebot"
+
+# 是否将群聊作为会话ID（群内多用户共享上下文）
+use_group_as_session: true
+
+# 会话ID是否包含 bot_id(self_id)，避免多 bot 同群冲突
+session_id_include_bot_id: true
+
+# 断线重连策略（forward/both 生效）
+reconnect_initial_delay: 2.0  # 初始重连间隔（秒）
+reconnect_max_delay: 30.0     # 最大重连间隔（秒）
+
+# WS 心跳配置（forward/both 生效）
+ping_interval: 20.0  # 心跳间隔（秒）
+ping_timeout: 10.0   # 心跳超时（秒）
+
+# 日志输出控制
+logging:
+  log_message: true       # 是否打印消息类事件
+  log_notice: true        # 是否打印通知类事件
+  log_request: true       # 是否打印请求类事件
+  log_meta: true          # 是否打印元事件
+  log_heartbeat: false    # 是否打印心跳元事件
+  debug_full_message: true  # debug 是否输出完整消息
+  debug_full_event: true    # debug 是否输出完整事件 JSON

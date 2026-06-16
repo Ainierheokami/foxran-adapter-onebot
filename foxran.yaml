@@ -1,0 +1,5 @@
+name: "onebot_v11"
+version: "1.0.0"
+type: "adapter"
+description: "OneBot v11 协议标准适配器"
+author: "Foxran"
