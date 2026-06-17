@@ -14,12 +14,21 @@
 
 
 async def startup():
-    """Start adapter-owned resources after a hot install."""
+    """Initialize adapter resources after loading."""
+
+
+async def enable():
+    """Start adapter-owned resources while enabled."""
     from .network.client import onebot_v11_client
     await onebot_v11_client.start()
 
 
-async def shutdown():
-    """Release adapter-owned resources before a hot uninstall."""
+async def disable():
+    """Stop adapter-owned resources without uninstalling."""
     from .network.client import onebot_v11_client
     await onebot_v11_client.stop()
+
+
+async def shutdown():
+    """Release adapter-owned resources before a hot uninstall."""
+    await disable()
