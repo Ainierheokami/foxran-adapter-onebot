@@ -43,7 +43,7 @@ class KickTool(BaseTool):
             return ToolResult(self.name, False, error="找不到当前活跃的通讯发射器(sender)，可能连接已断开，无法操作。")
             
         try:
-            from app.adapters.onebot_v11.action_tracker import onebot_action_tracker
+            from app.adapters.onebot_v11.store.action_tracker import onebot_action_tracker
             from app.adapters.onebot_v11.tools.utils import verify_punish_permission
 
             # 进行二验（Bot 操作权限 vs 目标权限）

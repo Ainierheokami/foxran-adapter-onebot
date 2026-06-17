@@ -34,7 +34,7 @@ class DeleteMsgTool(BaseTool):
             return ToolResult(self.name, False, error="找不到当前活跃的通讯发射器(sender)，可能连接已断开，无法操作。")
             
         try:
-            from app.adapters.onebot_v11.action_tracker import onebot_action_tracker
+            from app.adapters.onebot_v11.store.action_tracker import onebot_action_tracker
             
             # Agent使用的是内部的 short GUID，尝试将其映射回平台真实的数字 message_id
             platform_id = session_ctx.resolve_platform_id(message_id)

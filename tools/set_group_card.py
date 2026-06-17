@@ -41,7 +41,7 @@ class SetGroupCardTool(BaseTool):
             return ToolResult(self.name, False, error="找不到当前活跃的通讯发射器(sender)，可能连接已断开，无法操作。")
             
         try:
-            from app.adapters.onebot_v11.action_tracker import onebot_action_tracker
+            from app.adapters.onebot_v11.store.action_tracker import onebot_action_tracker
             
             # 二验：如果是去改别人的名片，需要严格按照等级进行越权拦截
             if str(user_id) != str(self_id):

@@ -21,8 +21,8 @@ from app.adapters.message_protocol import (
     make_user_message,
     resolve_message_id_from_platform,
 )
-from app.adapters.onebot_v11.action_tracker import onebot_action_tracker
-from app.adapters.onebot_v11.role_store import (
+from app.adapters.onebot_v11.store.action_tracker import onebot_action_tracker
+from app.adapters.onebot_v11.store.role_store import (
     UNKNOWN_COOLDOWN as _BOT_GROUP_ROLE_COOLDOWN,
     VALID_GROUP_ROLES as _VALID_GROUP_ROLES,
     get_cached_bot_role,

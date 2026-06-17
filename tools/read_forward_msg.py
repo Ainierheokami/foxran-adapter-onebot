@@ -30,7 +30,7 @@ class ReadForwardMsgTool(BaseTool):
             return ToolResult(self.name, False, error="找不到当前活跃的通讯发射器(sender)，可能连接已断开，无法操作。")
             
         try:
-            from app.adapters.onebot_v11.action_tracker import onebot_action_tracker
+            from app.adapters.onebot_v11.store.action_tracker import onebot_action_tracker
             
             # 使用 action_tracker 调用 OneBot API 获取转发内容
             response = await onebot_action_tracker.request(sender, "get_forward_msg", {"message_id": message_id}, timeout=8.0)

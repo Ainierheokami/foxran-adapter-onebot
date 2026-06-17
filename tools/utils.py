@@ -1,7 +1,7 @@
 ﻿from typing import Any, Dict, Optional, Tuple
 import asyncio
 from app.logger import setup_logger
-from app.adapters.onebot_v11.role_store import (
+from app.adapters.onebot_v11.store.role_store import (
     ROLE_TTL,
     VALID_GROUP_ROLES as _VALID_GROUP_ROLES,
     get_cached_bot_role as load_cached_bot_role,
