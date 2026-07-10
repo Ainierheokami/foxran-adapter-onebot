@@ -1,5 +1,24 @@
-name: "onebot_v11"
-version: "1.0.0"
-type: "adapter"
-description: "OneBot v11 协议标准适配器"
-author: "Foxran"
+manifest_version: 1
+
+extension:
+  id: "onebot_v11"
+  name: "OneBot v11"
+  version: "1.0.0"
+  type: "adapter"
+  description: "OneBot v11 协议标准适配器"
+  author: "Foxran"
+  repository: "https://github.com/Ainierheokami/foxran-adapter-onebot"
+  tags:
+    - "onebot"
+    - "qq"
+
+compatibility:
+  foxran: ">=1.0.0"
+  python: ">=3.10"
+
+adapter:
+  entry: "__init__.py"
+  config_template: "template.yml"
+  platforms:
+    - "onebot"
+    - "qq"

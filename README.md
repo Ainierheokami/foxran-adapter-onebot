@@ -8,7 +8,7 @@
 
 若需手动安装，在 Foxran Agent 根目录下运行：
 ```bash
-python scripts/install_market_plugin.py https://github.com/Foxran/foxran-adapter-onebot.git --type adapter
+python scripts/install_market_plugin.py https://github.com/Ainierheokami/foxran-adapter-onebot.git --type adapter
 ```
 
 ## ⚙️ 配置说明
