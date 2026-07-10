@@ -32,3 +32,14 @@ async def disable():
 async def shutdown():
     """Release adapter-owned resources before a hot uninstall."""
     await disable()
+
+
+from fastapi import APIRouter
+
+from .api.endpoints import router as api_router
+from .network.reverse_ws import router as reverse_ws_router
+
+
+router = APIRouter()
+router.include_router(api_router)
+router.include_router(reverse_ws_router)
