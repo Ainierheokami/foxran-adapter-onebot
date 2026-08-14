@@ -1,5 +1,5 @@
 # =================== OneBot v11 配置 ===================
-enabled: true  # 是否启用 OneBot v11 适配器（正向/反向都受此开关影响）
+enabled: true  # 兼容旧配置；多账户时由 accounts 内每个账户的 enabled 控制
 
 # 连接模式:
 # - forward: 本服务作为客户端主动连接 OneBot WS
@@ -43,3 +43,12 @@ logging:
   log_heartbeat: false    # 是否打印心跳元事件
   debug_full_message: true  # debug 是否输出完整消息
   debug_full_event: true    # debug 是否输出完整事件 JSON
+
+# 多账户配置。配置后优先使用此列表；旧的顶层字段会自动作为 default 账户兼容运行。
+# accounts:
+#   - id: "main"
+#     name: "主账号"
+#     enabled: true
+#     connection_mode: "forward"
+#     ws_url: "ws://127.0.0.1:8080"
+#     access_token: ""

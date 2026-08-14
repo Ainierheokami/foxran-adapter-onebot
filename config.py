@@ -42,6 +42,28 @@ DEFAULT_ONEBOT_V11_CONFIG: Dict[str, Any] = {
 }
 
 
+def _normalize_accounts(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Expose legacy single-account settings as a default account."""
+    raw_accounts = cfg.get("accounts")
+    if not isinstance(raw_accounts, list) or not raw_accounts:
+        account = {key: value for key, value in cfg.items() if key != "accounts"}
+        account["id"] = str(account.get("id") or "default")
+        account["name"] = str(account.get("name") or "默认 OneBot")
+        cfg["accounts"] = [account]
+    else:
+        normalized = []
+        for index, item in enumerate(raw_accounts):
+            if not isinstance(item, dict):
+                continue
+            account = DEFAULT_ONEBOT_V11_CONFIG.copy()
+            account.update(item)
+            account["id"] = str(account.get("id") or f"onebot-{index + 1}")
+            account["name"] = str(account.get("name") or account["id"])
+            normalized.append(account)
+        cfg["accounts"] = normalized or [{**DEFAULT_ONEBOT_V11_CONFIG, "id": "default", "name": "默认 OneBot"}]
+    return cfg
+
+
 def _generate_token() -> str:
     return secrets.token_urlsafe(24)
 
@@ -92,7 +114,7 @@ def load_onebot_v11_config() -> Dict[str, Any]:
         updated_token = _ensure_access_token_in_file()
         if updated_token:
             cfg["access_token"] = updated_token
-        return cfg
+        return _normalize_accounts(cfg)
     except Exception as e:
         logger.error(f"Failed to load OneBot v11 config: {e}")
         return DEFAULT_ONEBOT_V11_CONFIG.copy()
@@ -136,6 +158,17 @@ class OneBotV11ConfigManager:
         except Exception as e:
             logger.error(f"Failed to reload OneBot v11 config: {e}")
             return False
+
+    def get_accounts(self, force_reload: bool = False) -> list[Dict[str, Any]]:
+        cfg = self.get_config(force_reload=force_reload)
+        return [dict(account) for account in cfg.get("accounts", []) if isinstance(account, dict)]
+
+    def get_account(self, account_id: str, force_reload: bool = False) -> Dict[str, Any]:
+        wanted = str(account_id or "default")
+        for account in self.get_accounts(force_reload=force_reload):
+            if str(account.get("id")) == wanted:
+                return account
+        return {}
 
 
 onebot_v11_config = OneBotV11ConfigManager()

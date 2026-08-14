@@ -42,19 +42,22 @@ def _extract_token(websocket: WebSocket) -> str:
     return _get_cookie_value(websocket, "access_token")
 
 
-def _auth_ok(websocket: WebSocket) -> bool:
-    cfg = onebot_v11_config.get_config()
+def _auth_ok(websocket: WebSocket, account_id: str) -> bool:
+    cfg = onebot_v11_config.get_account(account_id, force_reload=True)
     expected = (cfg.get("access_token") or "").strip()
     if not expected:
         return False
     return _extract_token(websocket) == expected
 
 
-@router.websocket("/onebot/v11/ws")
-async def onebot_v11_reverse_ws(websocket: WebSocket):
+async def _onebot_v11_reverse_ws(websocket: WebSocket, account_id: str):
     await websocket.accept()
 
-    cfg = onebot_v11_config.get_config(force_reload=True)
+    cfg = onebot_v11_config.get_account(account_id, force_reload=True)
+    if not cfg:
+        await websocket.send_json({"error": "unknown account"})
+        await websocket.close()
+        return
     mode = str(cfg.get("connection_mode", "forward")).strip().lower()
     enabled = bool(cfg.get("enabled", False))
     if not enabled or mode not in ("reverse", "both"):
@@ -67,13 +70,13 @@ async def onebot_v11_reverse_ws(websocket: WebSocket):
         await websocket.close()
         return
 
-    if not _auth_ok(websocket):
+    if not _auth_ok(websocket, account_id):
         logger.warning("OneBot 反向 WS 拒绝：鉴权失败")
         await websocket.send_json({"error": "unauthorized"})
         await websocket.close()
         return
 
-    logger.info("OneBot v11 反向 WS 已连接")
+    logger.info("OneBot v11 反向 WS 已连接：account=%s", account_id)
 
     sender_factory = lambda ctx: ReverseOneBotReplySender(websocket, ctx)
 
@@ -82,7 +85,7 @@ async def onebot_v11_reverse_ws(websocket: WebSocket):
             try:
                 data = await websocket.receive_json()
             except WebSocketDisconnect:
-                logger.info("OneBot v11 反向 WS 客户端主动断开")
+                logger.info("OneBot v11 反向 WS 客户端主动断开：account=%s", account_id)
                 break
             except Exception as e:
                 logger.warning(f"反向 WS 接收异常: {e}", exc_info=True)
@@ -109,5 +112,16 @@ async def onebot_v11_reverse_ws(websocket: WebSocket):
                         session_ctx.set_platform_id_for_message(outgoing_message_id, platform_message_id)
 
     finally:
-        logger.info("OneBot v11 反向 WS 已断开")
+        logger.info("OneBot v11 反向 WS 已断开：account=%s", account_id)
+
+
+@router.websocket("/onebot/v11/ws")
+async def onebot_v11_reverse_ws(websocket: WebSocket):
+    """Legacy reverse endpoint for the default account."""
+    await _onebot_v11_reverse_ws(websocket, "default")
+
+
+@router.websocket("/onebot/v11/ws/{account_id}")
+async def onebot_v11_reverse_ws_account(websocket: WebSocket, account_id: str):
+    await _onebot_v11_reverse_ws(websocket, account_id)
 

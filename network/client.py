@@ -22,7 +22,8 @@ logger = setup_logger(__name__)
 
 
 class OneBotV11WsClient:
-    def __init__(self):
+    def __init__(self, account_id: str):
+        self.account_id = account_id
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
         self._connected: bool = False
         self._run_task: Optional[asyncio.Task] = None
@@ -30,7 +31,7 @@ class OneBotV11WsClient:
         self._send_lock = asyncio.Lock()
 
     async def start(self) -> bool:
-        cfg = onebot_v11_config.get_config()
+        cfg = onebot_v11_config.get_account(self.account_id)
         if not cfg.get("enabled"):
             logger.info("OneBot v11 WS 客户端已禁用：配置开关关闭")
             return False
@@ -41,7 +42,7 @@ class OneBotV11WsClient:
             return True
         self._stop_event.clear()
         self._run_task = asyncio.create_task(self._run_loop())
-        logger.info("OneBot v11 WS 客户端启动中")
+        logger.info("OneBot v11 WS 客户端启动中：account=%s", self.account_id)
         return True
 
     async def stop(self):
@@ -52,7 +53,7 @@ class OneBotV11WsClient:
                 await self._run_task
         await self._close_ws()
         self._run_task = None
-        logger.info("OneBot v11 WS 客户端已停止")
+        logger.info("OneBot v11 WS 客户端已停止：account=%s", self.account_id)
 
     async def send_action(self, action: str, params: Dict[str, Any], echo: Optional[str] = None) -> bool:
         if not self._connected or not self._ws:
@@ -85,11 +86,12 @@ class OneBotV11WsClient:
                 return False
 
     async def _run_loop(self):
-        delay = onebot_v11_config.get_config().get("reconnect_initial_delay", 2.0)
-        max_delay = onebot_v11_config.get_config().get("reconnect_max_delay", 30.0)
+        initial = onebot_v11_config.get_account(self.account_id)
+        delay = initial.get("reconnect_initial_delay", 2.0)
+        max_delay = initial.get("reconnect_max_delay", 30.0)
 
         while not self._stop_event.is_set():
-            cfg = onebot_v11_config.get_config(force_reload=True)
+            cfg = onebot_v11_config.get_account(self.account_id, force_reload=True)
             if not cfg.get("enabled"):
                 await asyncio.sleep(1.0)
                 continue
@@ -120,7 +122,7 @@ class OneBotV11WsClient:
         ping_interval = cfg.get("ping_interval", 20.0)
         ping_timeout = cfg.get("ping_timeout", 10.0)
 
-        logger.info(f"正在连接 OneBot v11 WS: {ws_url}")
+        logger.info("正在连接 OneBot v11 WS：account=%s url=%s", self.account_id, ws_url)
         async with websockets.connect(
             ws_url,
             extra_headers=headers,
@@ -129,14 +131,14 @@ class OneBotV11WsClient:
         ) as ws:
             self._ws = ws
             self._connected = True
-            logger.info("OneBot v11 WS 已连接")
+            logger.info("OneBot v11 WS 已连接：account=%s", self.account_id)
             try:
                 async for message in ws:
                     await self._handle_ws_message(message)
             finally:
                 self._connected = False
                 self._ws = None
-                logger.warning("OneBot v11 WS 已断开")
+                logger.warning("OneBot v11 WS 已断开：account=%s", self.account_id)
 
     async def _handle_ws_message(self, message: Any):
         try:
@@ -193,5 +195,30 @@ class OneBotV11WsClient:
         self._connected = False
 
 
-onebot_v11_client = OneBotV11WsClient()
+class OneBotV11ClientManager:
+    def __init__(self) -> None:
+        self._clients: dict[str, OneBotV11WsClient] = {}
+
+    async def start(self) -> bool:
+        accounts = onebot_v11_config.get_accounts(force_reload=True)
+        wanted = {str(account["id"]): account for account in accounts if account.get("enabled")}
+        for account_id in list(self._clients):
+            if account_id not in wanted:
+                await self._clients.pop(account_id).stop()
+        started = False
+        for account_id in wanted:
+            client = self._clients.setdefault(account_id, OneBotV11WsClient(account_id))
+            started = await client.start() or started
+        return started
+
+    async def stop(self) -> None:
+        for client in list(self._clients.values()):
+            await client.stop()
+        self._clients.clear()
+
+    def status(self) -> dict[str, bool]:
+        return {account_id: client._connected for account_id, client in self._clients.items()}
+
+
+onebot_v11_client = OneBotV11ClientManager()
 
