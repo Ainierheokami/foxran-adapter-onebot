@@ -5,6 +5,8 @@ from typing import Any, Dict, Optional
 import threading
 import secrets
 import re
+import os
+import copy
 
 from app.logger import setup_logger
 from app.utils.yaml_utils import ensure_config_from_template, load_yaml_config_with_template
@@ -55,7 +57,7 @@ def _normalize_accounts(cfg: Dict[str, Any]) -> Dict[str, Any]:
         for index, item in enumerate(raw_accounts):
             if not isinstance(item, dict):
                 continue
-            account = DEFAULT_ONEBOT_V11_CONFIG.copy()
+            account = copy.deepcopy(DEFAULT_ONEBOT_V11_CONFIG)
             account.update(item)
             account["id"] = str(account.get("id") or f"onebot-{index + 1}")
             account["name"] = str(account.get("name") or account["id"])
@@ -109,9 +111,15 @@ def load_onebot_v11_config() -> Dict[str, Any]:
         cfg = load_yaml_config_with_template(
             ONEBOT_V11_CONFIG_PATH,
             ONEBOT_V11_TEMPLATE_PATH,
-            DEFAULT_ONEBOT_V11_CONFIG,
+            copy.deepcopy(DEFAULT_ONEBOT_V11_CONFIG),
         )
-        updated_token = _ensure_access_token_in_file()
+        try:
+            raw = yaml.safe_load(ONEBOT_V11_CONFIG_PATH.read_text(encoding="utf-8")) or {}
+        except Exception:
+            raw = {}
+        # The legacy token helper edits a top-level scalar. Never let it rewrite
+        # the first nested account token in canonical multi-account files.
+        updated_token = None if isinstance(raw.get("accounts"), list) else _ensure_access_token_in_file()
         if updated_token:
             cfg["access_token"] = updated_token
         return _normalize_accounts(cfg)
@@ -169,6 +177,18 @@ class OneBotV11ConfigManager:
             if str(account.get("id")) == wanted:
                 return account
         return {}
+
+    def save_accounts(self, accounts: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+        normalized = _normalize_accounts({"accounts": accounts})["accounts"]
+        ONEBOT_V11_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temporary = ONEBOT_V11_CONFIG_PATH.with_suffix(ONEBOT_V11_CONFIG_PATH.suffix + ".tmp")
+        temporary.write_text(
+            yaml.safe_dump({"accounts": normalized}, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+        os.replace(temporary, ONEBOT_V11_CONFIG_PATH)
+        self.get_config(force_reload=True)
+        return self.get_accounts()
 
 
 onebot_v11_config = OneBotV11ConfigManager()

@@ -29,18 +29,23 @@ class OneBotV11WsClient:
         self._run_task: Optional[asyncio.Task] = None
         self._stop_event = asyncio.Event()
         self._send_lock = asyncio.Lock()
+        self.state = "stopped"
+        self.last_error = ""
 
     async def start(self) -> bool:
         cfg = onebot_v11_config.get_account(self.account_id)
         if not cfg.get("enabled"):
+            self.state = "disabled"
             logger.info("OneBot v11 WS 客户端已禁用：配置开关关闭")
             return False
         if cfg.get("connection_mode", "forward") not in ("forward", "both"):
+            self.state = "reverse"
             logger.info("OneBot v11 WS 客户端已禁用：连接模式不允许 forward")
             return False
         if self._run_task and not self._run_task.done():
             return True
         self._stop_event.clear()
+        self.state = "connecting"
         self._run_task = asyncio.create_task(self._run_loop())
         logger.info("OneBot v11 WS 客户端启动中：account=%s", self.account_id)
         return True
@@ -53,6 +58,7 @@ class OneBotV11WsClient:
                 await self._run_task
         await self._close_ws()
         self._run_task = None
+        self.state = "stopped"
         logger.info("OneBot v11 WS 客户端已停止：account=%s", self.account_id)
 
     async def send_action(self, action: str, params: Dict[str, Any], echo: Optional[str] = None) -> bool:
@@ -104,6 +110,8 @@ class OneBotV11WsClient:
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                self.state = "retrying"
+                self.last_error = str(e)
                 logger.warning(f"OneBot WS 循环异常: {e}")
 
             if self._stop_event.is_set():
@@ -123,6 +131,7 @@ class OneBotV11WsClient:
         ping_timeout = cfg.get("ping_timeout", 10.0)
 
         logger.info("正在连接 OneBot v11 WS：account=%s url=%s", self.account_id, ws_url)
+        self.state = "connecting"
         async with websockets.connect(
             ws_url,
             extra_headers=headers,
@@ -131,6 +140,8 @@ class OneBotV11WsClient:
         ) as ws:
             self._ws = ws
             self._connected = True
+            self.state = "connected"
+            self.last_error = ""
             logger.info("OneBot v11 WS 已连接：account=%s", self.account_id)
             try:
                 async for message in ws:
@@ -138,6 +149,8 @@ class OneBotV11WsClient:
             finally:
                 self._connected = False
                 self._ws = None
+                if not self._stop_event.is_set():
+                    self.state = "retrying"
                 logger.warning("OneBot v11 WS 已断开：account=%s", self.account_id)
 
     async def _handle_ws_message(self, message: Any):
@@ -156,6 +169,7 @@ class OneBotV11WsClient:
             await handle_onebot_event(
                 data,
                 sender_factory=lambda ctx: ForwardOneBotReplySender(self, ctx),
+                account_id=self.account_id,
             )
             return
 
@@ -216,8 +230,15 @@ class OneBotV11ClientManager:
             await client.stop()
         self._clients.clear()
 
-    def status(self) -> dict[str, bool]:
-        return {account_id: client._connected for account_id, client in self._clients.items()}
+    def status(self) -> dict[str, dict[str, Any]]:
+        return {
+            account_id: {
+                "state": client.state,
+                "connected": client._connected,
+                "last_error": client.last_error,
+            }
+            for account_id, client in self._clients.items()
+        }
 
 
 onebot_v11_client = OneBotV11ClientManager()

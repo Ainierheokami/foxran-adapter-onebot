@@ -74,15 +74,18 @@ def build_session_id(
     user_id: str,
     group_id: Optional[int],
     self_id: Optional[str],
+    account_id: str = "default",
+    cfg: Optional[Dict[str, Any]] = None,
 ) -> str:
-    cfg = onebot_v11_config.get_config()
+    cfg = cfg or onebot_v11_config.get_account(account_id) or onebot_v11_config.get_config()
     prefix = cfg.get("session_id_prefix", "onebot")
     use_group = cfg.get("use_group_as_session", True)
     include_bot = cfg.get("session_id_include_bot_id", True)
+    account_part = "" if account_id == "default" else f"{account_id}:"
     bot_part = f"{self_id}:" if include_bot and self_id else ""
     if use_group and message_type == "group" and group_id:
-        return f"{prefix}:{bot_part}group:{group_id}"
-    return f"{prefix}:{bot_part}user:{user_id}"
+        return f"{prefix}:{account_part}{bot_part}group:{group_id}"
+    return f"{prefix}:{account_part}{bot_part}user:{user_id}"
 
 
 def is_mentioned(event: Dict[str, Any], message: Any, self_id: Any) -> bool:
@@ -309,9 +312,10 @@ async def _fetch_and_cache_self_role(
 async def handle_onebot_event(
     event: Dict[str, Any],
     sender_factory: Callable[[SessionContext], Any],
+    account_id: str = "default",
 ) -> None:
     post_type = (event.get("post_type") or "message").lower()
-    cfg = onebot_v11_config.get_config()
+    cfg = onebot_v11_config.get_account(account_id) or onebot_v11_config.get_config()
     log_cfg = cfg.get("logging") or {}
     platform = cfg.get("platform_name", "onebot")
     
@@ -325,7 +329,7 @@ async def handle_onebot_event(
         logger.info(f"OneBot 拦截到戳一戳事件，转换为消息处理: target={target_id}")
 
     if _is_self_sent_message(event):
-        await _handle_onebot_self_sent_event(event, sender_factory, platform, log_cfg)
+        await _handle_onebot_self_sent_event(event, sender_factory, platform, log_cfg, account_id, cfg)
         return
 
     if post_type != "message":
@@ -357,6 +361,8 @@ async def handle_onebot_event(
         user_id=user_id,
         group_id=group_id,
         self_id=str(self_id) if self_id is not None else None,
+        account_id=account_id,
+        cfg=cfg,
     )
     raw_message_text = str(event.get("raw_message") or message or "")
     if len(raw_message_text) > 1000:
@@ -392,6 +398,8 @@ async def handle_onebot_event(
         user_id=user_id,
         group_id=group_id,
         self_id=str(self_id) if self_id is not None else None,
+        account_id=account_id,
+        cfg=cfg,
     )
     
     try:
@@ -481,6 +489,7 @@ async def handle_onebot_event(
         "self_id": self_id,
         "sender_role": sender_info.get("role", "member")
     }
+    session_ctx.session_notes["onebot_account_id"] = account_id
     session_ctx.set_websocket(sender_factory(session_ctx))
 
     if is_stop_command(processed.internal):
@@ -578,6 +587,8 @@ async def _handle_onebot_self_sent_event(
     sender_factory: Callable[[SessionContext], Any],
     platform: str,
     log_cfg: Dict[str, Any],
+    account_id: str,
+    cfg: Dict[str, Any],
 ) -> None:
     message_type = event.get("message_type")
     group_id = event.get("group_id")
@@ -593,6 +604,8 @@ async def _handle_onebot_self_sent_event(
         user_id=user_id,
         group_id=group_id,
         self_id=str(self_id) if self_id is not None else None,
+        account_id=account_id,
+        cfg=cfg,
     )
 
     try:
@@ -627,6 +640,7 @@ async def _handle_onebot_self_sent_event(
         "self_id": self_id,
         "sender_role": role or sender_info.get("role", "member"),
     }
+    session_ctx.session_notes["onebot_account_id"] = account_id
     session_ctx.set_websocket(sender_factory(session_ctx))
 
     if message_id is not None:

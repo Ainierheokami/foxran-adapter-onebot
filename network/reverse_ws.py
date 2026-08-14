@@ -12,6 +12,11 @@ from app.api.core import active_sessions
 
 logger = setup_logger(__name__)
 router = APIRouter()
+_reverse_connections: dict[str, int] = {}
+
+
+def reverse_connection_status() -> dict[str, int]:
+    return dict(_reverse_connections)
 
 
 def _get_cookie_value(websocket: WebSocket, key: str) -> str:
@@ -77,6 +82,7 @@ async def _onebot_v11_reverse_ws(websocket: WebSocket, account_id: str):
         return
 
     logger.info("OneBot v11 反向 WS 已连接：account=%s", account_id)
+    _reverse_connections[account_id] = _reverse_connections.get(account_id, 0) + 1
 
     sender_factory = lambda ctx: ReverseOneBotReplySender(websocket, ctx)
 
@@ -95,7 +101,7 @@ async def _onebot_v11_reverse_ws(websocket: WebSocket, account_id: str):
                 continue
 
             if "post_type" in data:
-                await handle_onebot_event(data, sender_factory=sender_factory)
+                await handle_onebot_event(data, sender_factory=sender_factory, account_id=account_id)
                 continue
 
             if "status" in data and "echo" in data:
@@ -112,6 +118,11 @@ async def _onebot_v11_reverse_ws(websocket: WebSocket, account_id: str):
                         session_ctx.set_platform_id_for_message(outgoing_message_id, platform_message_id)
 
     finally:
+        remaining = _reverse_connections.get(account_id, 1) - 1
+        if remaining > 0:
+            _reverse_connections[account_id] = remaining
+        else:
+            _reverse_connections.pop(account_id, None)
         logger.info("OneBot v11 反向 WS 已断开：account=%s", account_id)
 
 
