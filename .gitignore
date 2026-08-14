@@ -1,3 +1,4 @@
+# Python bytecode, environments, and test/tool caches
 __pycache__/
 *.py[codz]
 *$py.class
@@ -10,25 +11,16 @@ __pycache__/
 .coverage.*
 htmlcov/
 coverage.xml
+.env
 .venv/
 venv/
 build/
 dist/
 *.egg-info/
+
+# Local runtime artifacts
 *.log
 tmp/
 output/
 .DS_Store
 Thumbs.db
-*.py[cod]
-*$py.class
-
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
-
-.env
-.venv/
-venv/
