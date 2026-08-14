@@ -468,10 +468,11 @@ async def handle_onebot_event(
     if not decision.allowed:
         logger.debug(f"OneBot 消息被白名单策略拦截: reason={decision.reason}")
         return
-    
-    # 临时调试日志，用于排查艾特问题
-    if decision.should_reply:
-         logger.info(f"决定回复消息: reason={decision.reason}, is_at={is_at}, self_id={self_id}")
+    if not decision.should_reply:
+        logger.debug(f"OneBot 消息未触发回复: reason={decision.reason}, is_at={is_at}, self_id={self_id}")
+        return
+
+    logger.info(f"决定回复消息: reason={decision.reason}, is_at={is_at}, self_id={self_id}")
 
     session_ctx.session_notes["onebot_target"] = {
         "message_type": message_type,
