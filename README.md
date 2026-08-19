@@ -30,6 +30,6 @@ access_token: "xxx"            # 连接鉴权 Token（插件首次运行会自�
 
 为适配 IM 场景，本插件内嵌了针对群聊管控的特定 Tools：
 - **群组管理**: 包含禁言 (`ban`)、踢出群聊 (`kick`)、修改群名片 (`set_group_card`) 等。
-- **互动行为**: 提供双击头像戳一戳 (`poke`)、读取合并转发记录 (`read_forward_msg`) 等接口。
+- **互动行为**: 提供双击头像戳一戳 (`poke`)、读取合并转发记录 (`read_forward_msg`) 等接口。读取转发记录时会保留其中图片的 `url-<uuid>` 引用，并返回 `image_identifiers`，可直接交给宿主的 `image_understanding` 做多图分析。
 
 以上工具当且仅当智能体通过 OneBot 协议端收到消息时可用，不污染全局 WebUI 沙盒空间。
