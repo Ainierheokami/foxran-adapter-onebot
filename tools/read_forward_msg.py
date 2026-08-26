@@ -76,6 +76,38 @@ def _format_forward_content(content: Any) -> Tuple[str, List[str]]:
     )
     return text, image_identifiers
 
+
+def _extract_forward_messages(data: Any) -> List[Dict[str, Any]]:
+    """兼容 NapCat 展开结构与 OneBot v11 标准 node 消息段结构。"""
+    if not isinstance(data, dict):
+        return []
+
+    messages = data.get("messages")
+    if isinstance(messages, list):
+        return [message for message in messages if isinstance(message, dict)]
+
+    segments = data.get("message")
+    if not isinstance(segments, list):
+        return []
+
+    normalized = []
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        if str(segment.get("type") or "").lower() != "node":
+            normalized.append(segment)
+            continue
+        node = segment.get("data") or {}
+        if not isinstance(node, dict):
+            continue
+        normalized.append({
+            "sender": {
+                "nickname": node.get("nickname") or node.get("name") or "未知",
+            },
+            "content": node.get("content") or node.get("message") or "",
+        })
+    return normalized
+
 class ReadForwardMsgTool(BaseTool):
     name: str = "read_forward_msg"
     description: str = "获取合并转发消息内的详细记录。只能读取平台特有的合并转发结构。"
@@ -105,10 +137,15 @@ class ReadForwardMsgTool(BaseTool):
             from app.adapters.onebot_v11.store.action_tracker import onebot_action_tracker
             
             # 使用 action_tracker 调用 OneBot API 获取转发内容
-            response = await onebot_action_tracker.request(sender, "get_forward_msg", {"message_id": message_id}, timeout=8.0)
+            response = await onebot_action_tracker.request(
+                sender,
+                "get_forward_msg",
+                {"id": message_id, "message_id": message_id},
+                timeout=8.0,
+            )
             
             if response and response.get("status") in ("ok", "success"):
-                messages = response.get("data", {}).get("messages", [])
+                messages = _extract_forward_messages(response.get("data"))
                 content_buffer = []
                 image_identifiers = []
                 for m in messages:

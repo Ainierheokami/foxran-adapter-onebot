@@ -82,3 +82,37 @@ async def test_tool_result_exposes_image_identifiers_for_followup_vision(monkeyp
     assert result.data["image_identifiers"] == ["url-forwarded-image"]
     assert "image_understanding" in result.data["image_tool_hint"]
     assert "image_identifier=url-forwarded-image" in history[0].content
+
+
+@pytest.mark.asyncio
+async def test_tool_reads_standard_onebot_forward_response(monkeypatch):
+    from app.adapters.onebot_v11.store.action_tracker import onebot_action_tracker
+
+    captured = {}
+
+    async def fake_request(_sender, action, params, **_kwargs):
+        captured.update(action=action, params=params)
+        return {
+            "status": "ok",
+            "data": {
+                "message": [{
+                    "type": "node",
+                    "data": {
+                        "nickname": "Alice",
+                        "content": [{"type": "text", "data": {"text": "hello"}}],
+                    },
+                }],
+            },
+        }
+
+    monkeypatch.setattr(onebot_action_tracker, "request", fake_request)
+    session = SimpleNamespace(websocket=object(), add_history_message=lambda _message: None)
+
+    result = await module.ReadForwardMsgTool().execute("forward-id", session_ctx=session)
+
+    assert captured == {
+        "action": "get_forward_msg",
+        "params": {"id": "forward-id", "message_id": "forward-id"},
+    }
+    assert result.success is True
+    assert result.data["content"] == "Alice: hello"
