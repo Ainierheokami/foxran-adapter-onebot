@@ -5,6 +5,8 @@ from app.logger import setup_logger
 logger = setup_logger(__name__)
 
 class SetGroupCardTool(BaseTool):
+    output_kind = "data"
+    result_visibility = "user_visible"
     name: str = "set_group_card"
     description: str = "修改群内某个成员的群名片/群昵称。或者如果目标是你自己，可以修改自己的名片。"
     tool_type: ToolType = "direct"

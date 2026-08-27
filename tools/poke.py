@@ -5,6 +5,8 @@ from app.logger import setup_logger
 logger = setup_logger(__name__)
 
 class PokeTool(BaseTool):
+    output_kind = "data"
+    result_visibility = "user_visible"
     name: str = "poke"
     description: str = "戳一戳某个成员的面部或头像。可用于群聊中提醒或互动对方。"
     tool_type: ToolType = "direct"

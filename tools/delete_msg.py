@@ -5,6 +5,8 @@ from app.logger import setup_logger
 logger = setup_logger(__name__)
 
 class DeleteMsgTool(BaseTool):
+    output_kind = "data"
+    result_visibility = "user_visible"
     name: str = "delete_msg"
     description: str = "撤回某条已经发出的消息。需要提供该消息的 message_id。如果你是群管/主，你可以撤回普通成员的消息。"
     tool_type: ToolType = "direct"

@@ -33,3 +33,5 @@ access_token: "xxx"            # 连接鉴权 Token（插件首次运行会自�
 - **互动行为**: 提供双击头像戳一戳 (`poke`)、读取合并转发记录 (`read_forward_msg`) 等接口。读取转发记录时会保留其中图片的 `url-<uuid>` 引用，并返回 `image_identifiers`，可直接交给宿主的 `image_understanding` 做多图分析。
 
 以上工具当且仅当智能体通过 OneBot 协议端收到消息时可用，不污染全局 WebUI 沙盒空间。
+
+工具已声明结构化执行契约：群管和互动操作返回用户可见的 `data` 结果；读取合并转发属于 Agent 内部数据，并要求宿主在读取后继续组织最终回答。旧版宿主仍会按原有 `direct/perceptual` 类型兼容运行。

@@ -5,6 +5,8 @@ from app.logger import setup_logger
 logger = setup_logger(__name__)
 
 class BanTool(BaseTool):
+    output_kind = "data"
+    result_visibility = "user_visible"
     name: str = "ban"
     description: str = "将群聊中的某个成员禁言指定时间。需要机器人是群主或管理员。仅在OneBot平台有效。"
     tool_type: ToolType = "direct"

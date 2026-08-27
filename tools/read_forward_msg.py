@@ -109,6 +109,9 @@ def _extract_forward_messages(data: Any) -> List[Dict[str, Any]]:
     return normalized
 
 class ReadForwardMsgTool(BaseTool):
+    output_kind = "data"
+    result_visibility = "agent_only"
+    continuation_policy = "continue_agent"
     name: str = "read_forward_msg"
     description: str = "获取合并转发消息内的详细记录。只能读取平台特有的合并转发结构。"
     tool_type: ToolType = "perceptual"
