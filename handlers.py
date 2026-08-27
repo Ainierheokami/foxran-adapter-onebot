@@ -477,7 +477,23 @@ async def handle_onebot_event(
         logger.debug(f"OneBot 消息被白名单策略拦截: reason={decision.reason}")
         return
     if not decision.should_reply:
-        logger.debug(f"OneBot 消息未触发回复: reason={decision.reason}, is_at={is_at}, self_id={self_id}")
+        platform_id = event.get("message_id")
+        enriched_content = await _expand_reply_reference(processed.compressed, session_ctx)
+        current_message = make_user_message(
+            content=enriched_content,
+            user_id=user_id,
+            user_name=user_name,
+            platform=platform,
+            platform_id=platform_id,
+            raw_content=processed.original,
+            metadata={
+                "message_parts": _enrich_reply_parts(processed.parts, session_ctx),
+            },
+        )
+        bind_platform_id(session_ctx, current_message, platform_id)
+        session_ctx.add_history_message(message=current_message)
+        await session_ctx.broadcast_user_message(current_message)
+        logger.info("OneBot 消息仅记录历史：回复策略未触发本轮响应（reason=%s）。", decision.reason)
         return
 
     logger.info(f"决定回复消息: reason={decision.reason}, is_at={is_at}, self_id={self_id}")
@@ -511,26 +527,6 @@ async def handle_onebot_event(
             logger.info("OneBot 会话任务已被用户停止: %s", session_ctx.session_id)
         else:
             await session_ctx.send_assistant_message("当前没有正在执行的任务。")
-        return
-
-    if not decision.should_reply:
-        platform_id = event.get("message_id")
-        enriched_content = await _expand_reply_reference(processed.compressed, session_ctx)
-        current_message = make_user_message(
-            content=enriched_content,
-            user_id=user_id,
-            user_name=user_name,
-            platform=platform,
-            platform_id=platform_id,
-            raw_content=processed.original,
-            metadata={
-                "message_parts": _enrich_reply_parts(processed.parts, session_ctx),
-            },
-        )
-        bind_platform_id(session_ctx, current_message, platform_id)
-        session_ctx.add_history_message(message=current_message)
-        await session_ctx.broadcast_user_message(current_message)
-        logger.info("OneBot 消息仅记录历史：回复策略未触发本轮响应（reason=%s）。", decision.reason)
         return
 
     if _should_reset_dialog(processed.internal, is_at, message_type):
