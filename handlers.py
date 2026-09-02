@@ -369,14 +369,30 @@ async def handle_onebot_event(
         raw_message_text = raw_message_text[:1000] + "..."
     metrics.track_adapter_message(platform, "in", session_id_temp, raw_message_text)
 
+    is_at = is_mentioned(event, message, self_id)
+    # Do not download every image posted in a busy group. Materialization is
+    # enabled immediately for private/mentioned messages and, below, after the
+    # reply policy confirms another group message should receive a response.
+    media_materialized = (message_type or "").lower() != "group" or is_at
+
     message_processor = get_message_processor()
-    processed = None
-    try:
-        processed = await message_processor.process_incoming_message(
+    async def process_with_media_policy(materialize_media: bool):
+        return await message_processor.process_incoming_message(
             platform=platform,
             raw_content=message,
-            message_data={"role": "user", "content": message, "user_id": user_id, "user_name": user_name},
+            message_data={
+                "role": "user",
+                "content": message,
+                "user_id": user_id,
+                "user_name": user_name,
+                "session_id": session_id_temp,
+                "materialize_media": materialize_media,
+            },
         )
+
+    processed = None
+    try:
+        processed = await process_with_media_policy(media_materialized)
     except Exception as e:
         logger.error(f"OneBot 入站处理失败: {e}")
         return
@@ -415,8 +431,6 @@ async def handle_onebot_event(
         logger.error(f"创建会话上下文失败: {e}")
         return
 
-    is_at = is_mentioned(event, message, self_id)
-    
     # [新增] 检查是否回复了 Bot 之前的消息
     # 如果用户没有直接 @Bot，但是回复（引用）了 Bot 之前发出的消息，同样将其视为被 @（触发交互）
     if not is_at:
@@ -429,6 +443,10 @@ async def handle_onebot_event(
                 if msg_obj and msg_obj.role in ("assistant", "bot"):
                     is_at = True
                     logger.info(f"检测到用户引用了 Bot 的历史消息({reply_id_platform})，触发自动回复响应。")
+
+    if is_at and not media_materialized:
+        processed = await process_with_media_policy(True)
+        media_materialized = True
 
     command = _parse_group_command(processed.internal)
     if command and message_type == "group":
@@ -473,6 +491,9 @@ async def handle_onebot_event(
         is_mention=is_at,
         bot_id=str(self_id) if self_id is not None else None,
     )
+    if decision.allowed and decision.should_reply and not media_materialized:
+        processed = await process_with_media_policy(True)
+        media_materialized = True
     if not decision.allowed:
         logger.debug(f"OneBot 消息被白名单策略拦截: reason={decision.reason}")
         return

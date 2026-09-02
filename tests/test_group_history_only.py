@@ -37,7 +37,10 @@ class GroupHistoryOnlyTest(unittest.IsolatedAsyncioTestCase):
             parts=[{"type": "image", "url": image_url}],
         )
 
-        async def process_incoming_message(**_kwargs):
+        process_calls = []
+
+        async def process_incoming_message(**kwargs):
+            process_calls.append(kwargs)
             return processed
 
         processor = SimpleNamespace(process_incoming_message=process_incoming_message)
@@ -80,6 +83,9 @@ class GroupHistoryOnlyTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.broadcasts, session.history)
         self.assertEqual(session.handled, [])
         self.assertNotIn(session.session_id, module.active_processors)
+        self.assertEqual(len(process_calls), 1)
+        self.assertFalse(process_calls[0]["message_data"]["materialize_media"])
+        self.assertEqual(process_calls[0]["message_data"]["session_id"], session.session_id)
 
 
 if __name__ == "__main__":
