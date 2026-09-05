@@ -1,4 +1,8 @@
+import logging
+
 from fastapi import APIRouter
+
+logger = logging.getLogger(__name__)
 
 try:
     from .adapter import OneBotAdapter
@@ -15,16 +19,36 @@ router.include_router(reverse_ws_router)
 
 
 def _sync_echo_isolation():
+    owner = "adapter:onebot"
     try:
         from app.adapters.outbound_tracker import load_echo_isolation_from_config
         try:
             from .config import onebot_v11_config
         except (ImportError, ValueError):
             from config import onebot_v11_config
-        cfg = onebot_v11_config.get_config() if hasattr(onebot_v11_config, "get_config") else {}
-        load_echo_isolation_from_config(owner="adapter:onebot", config=cfg)
-    except Exception:
-        pass
+        cfg = onebot_v11_config.get_config(force_reload=True)
+        loaded = load_echo_isolation_from_config(owner=owner, config=cfg)
+        logger.info(
+            "echo isolation config loaded: event=echo_isolation_sync owner=%s mappings=%s",
+            owner,
+            loaded,
+        )
+    except Exception as exc:
+        logger.error(
+            "echo isolation config failed: event=echo_isolation_sync_failed owner=%s reason=config_load error_type=%s",
+            owner,
+            type(exc).__name__,
+        )
+        try:
+            from app.utils.metrics_manager import metrics
+            metrics.track_metric(
+                "echo_isolation.sync_failure", 1, {"owner": owner, "reason": "config_load"}
+            )
+        except Exception as metric_exc:
+            logger.error(
+                "echo isolation failure metric failed: event=echo_isolation_metric_failed error_type=%s",
+                type(metric_exc).__name__,
+            )
 
 
 def register_adapter(registry):

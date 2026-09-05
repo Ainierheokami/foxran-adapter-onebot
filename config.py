@@ -32,6 +32,11 @@ DEFAULT_ONEBOT_V11_CONFIG: Dict[str, Any] = {
     "reconnect_max_delay": 30.0,
     "ping_interval": 20.0,
     "ping_timeout": 10.0,
+    "echo_isolation": {
+        "enabled": False,
+        "peer_bot_ids": {},
+        "group_mappings": [],
+    },
     "logging": {
         "log_message": True,
         "log_notice": True,
