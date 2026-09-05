@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Any, Callable, Dict, Optional
 import re
@@ -800,10 +800,13 @@ def _should_reset_dialog(internal_content: str, is_mention: bool, message_type: 
 
 
 async def _reset_session_context(session_ctx: SessionContext) -> None:
-    session_ctx.clear_history()
-    session_ctx.clear_pending_messages()
-    session_ctx.clear_history_snapshot()
-    session_ctx.clear_thought_process()
+    if hasattr(session_ctx, "reset_session"):
+        await session_ctx.reset_session()
+    else:
+        session_ctx.clear_history()
+        session_ctx.clear_pending_messages()
+        session_ctx.clear_history_snapshot()
+        session_ctx.clear_thought_process()
     if session_ctx.session_id in active_processors:
         processor = active_processors.pop(session_ctx.session_id)
         await processor.stop(abort_active=True)
