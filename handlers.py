@@ -9,7 +9,10 @@ import time
 from app.logger import setup_logger
 from app.adapters.onebot_v11.config import onebot_v11_config
 from app.api.core import get_or_create_session_context, active_processors
-from app.adapters.control.stop_commands import is_stop_command
+from app.adapters.control.pre_llm_commands import (
+    execute_pre_llm_match,
+    match_pre_llm_command,
+)
 import app.api.core as api_core
 from app.tasks.core.session_processor import SessionProcessor
 from app.context.context_manager import SessionContext
@@ -370,10 +373,16 @@ async def handle_onebot_event(
     metrics.track_adapter_message(platform, "in", session_id_temp, raw_message_text)
 
     is_at = is_mentioned(event, message, self_id)
+    # Match raw text before media materialization. Processed content is checked
+    # again later so adapters can still expose normalized command syntax.
+    raw_pre_llm_match = match_pre_llm_command(raw_message_text, platform)
     # Do not download every image posted in a busy group. Materialization is
     # enabled immediately for private/mentioned messages and, below, after the
     # reply policy confirms another group message should receive a response.
-    media_materialized = (message_type or "").lower() != "group" or is_at
+    media_materialized = (
+        raw_pre_llm_match is None
+        and ((message_type or "").lower() != "group" or is_at)
+    )
 
     message_processor = get_message_processor()
     async def process_with_media_policy(materialize_media: bool):
@@ -444,6 +453,61 @@ async def handle_onebot_event(
                     is_at = True
                     logger.info(f"检测到用户引用了 Bot 的历史消息({reply_id_platform})，触发自动回复响应。")
 
+    decision = platform_policy.evaluate(
+        platform=platform,
+        message_type=message_type,
+        user_id=user_id,
+        group_id=group_id,
+        is_mention=is_at,
+        bot_id=str(self_id) if self_id is not None else None,
+    )
+    if not decision.allowed:
+        logger.debug(f"OneBot 消息被白名单策略拦截: reason={decision.reason}")
+        return
+
+    pre_llm_match = raw_pre_llm_match or match_pre_llm_command(processed.internal, platform)
+    if pre_llm_match:
+        is_private = (message_type or "").lower() == "private"
+        can_execute = is_private or is_at or platform_policy.is_admin(
+            platform=platform,
+            bot_id=str(self_id) if self_id is not None else None,
+            user_id=user_id,
+            message_type=message_type,
+            group_id=group_id,
+        )
+        if not can_execute:
+            logger.info("OneBot 前置命令被忽略：群聊中未 @ 且非管理员。")
+            return
+        session_ctx.session_notes["onebot_target"] = {
+            "message_type": message_type,
+            "user_id": user_id,
+            "group_id": group_id,
+            "self_id": self_id,
+            "sender_role": sender_info.get("role", "member"),
+        }
+        session_ctx.session_notes["onebot_account_id"] = account_id
+        session_ctx.set_websocket(sender_factory(session_ctx))
+        result = await execute_pre_llm_match(
+            pre_llm_match,
+            session_ctx,
+            active_processors,
+            metadata={
+                "platform": platform,
+                "message_type": message_type,
+                "user_id": user_id,
+                "group_id": group_id,
+                "is_mention": is_at,
+                "event": event,
+            },
+        )
+        await session_ctx.send_assistant_message(result.reply)
+        logger.info(
+            "OneBot 已在 LLM 前执行命令: session=%s command=%s",
+            session_ctx.session_id,
+            result.command,
+        )
+        return
+
     if is_at and not media_materialized:
         processed = await process_with_media_policy(True)
         media_materialized = True
@@ -483,20 +547,9 @@ async def handle_onebot_event(
             await session_ctx.send_assistant_message(reply)
         return
 
-    decision = platform_policy.evaluate(
-        platform=platform,
-        message_type=message_type,
-        user_id=user_id,
-        group_id=group_id,
-        is_mention=is_at,
-        bot_id=str(self_id) if self_id is not None else None,
-    )
     if decision.allowed and decision.should_reply and not media_materialized:
         processed = await process_with_media_policy(True)
         media_materialized = True
-    if not decision.allowed:
-        logger.debug(f"OneBot 消息被白名单策略拦截: reason={decision.reason}")
-        return
     if not decision.should_reply:
         platform_id = event.get("message_id")
         enriched_content = await _expand_reply_reference(processed.compressed, session_ctx)
@@ -528,35 +581,6 @@ async def handle_onebot_event(
     }
     session_ctx.session_notes["onebot_account_id"] = account_id
     session_ctx.set_websocket(sender_factory(session_ctx))
-
-    if is_stop_command(processed.internal):
-        is_private = (message_type or "").lower() == "private"
-        can_stop = is_private or is_at or platform_policy.is_admin(
-            platform=platform,
-            bot_id=str(self_id) if self_id is not None else None,
-            user_id=user_id,
-            message_type=message_type,
-            group_id=group_id,
-        )
-        if not can_stop:
-            logger.info("OneBot 停止命令被忽略：群聊中未 @ 且非管理员。")
-            return
-        processor = active_processors.get(session_ctx.session_id)
-        if processor:
-            await processor.abort()
-            await session_ctx.send_assistant_message("已停止当前任务。")
-            logger.info("OneBot 会话任务已被用户停止: %s", session_ctx.session_id)
-        else:
-            await session_ctx.send_assistant_message("当前没有正在执行的任务。")
-        return
-
-    if _should_reset_dialog(processed.internal, is_at, message_type):
-        before_count = len(session_ctx.history)
-        await _reset_session_context(session_ctx)
-        reply_text = f"已重置对话，历史记录 {before_count} => 0"
-        await session_ctx.send_assistant_message(reply_text)
-        logger.info(f"OneBot 会话已重置: {session_ctx.session_id}，历史记录 {before_count} => 0")
-        return
 
     await _fetch_and_cache_self_role(session_ctx, message_type, group_id, self_id, session_ctx.websocket)
 
@@ -786,30 +810,6 @@ def _log_onebot_non_message(event: Dict[str, Any]) -> None:
     logger.info(summary)
     if log_cfg.get("debug_full_event", True):
         logger.debug(f"OneBot 通知完整内容: {json.dumps(event, ensure_ascii=False)}")
-
-
-def _should_reset_dialog(internal_content: str, is_mention: bool, message_type: Optional[str]) -> bool:
-    is_private = (message_type or "").lower() == "private"
-    if not is_private and not is_mention:
-        return False
-    if not internal_content:
-        return False
-    text = internal_content.lower().strip()
-    keywords = ("重置对话", "重置聊天", "清理对话", "清理聊天", "清空对话", "清空聊天")
-    return any(keyword in text for keyword in keywords)
-
-
-async def _reset_session_context(session_ctx: SessionContext) -> None:
-    if hasattr(session_ctx, "reset_session"):
-        await session_ctx.reset_session()
-    else:
-        session_ctx.clear_history()
-        session_ctx.clear_pending_messages()
-        session_ctx.clear_history_snapshot()
-        session_ctx.clear_thought_process()
-    if session_ctx.session_id in active_processors:
-        processor = active_processors.pop(session_ctx.session_id)
-        await processor.stop(abort_active=True)
 
 
 async def _expand_reply_reference(content: str, session_ctx: SessionContext) -> str:
