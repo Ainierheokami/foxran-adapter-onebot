@@ -373,6 +373,28 @@ async def handle_onebot_event(
     metrics.track_adapter_message(platform, "in", session_id_temp, raw_message_text)
 
     is_at = is_mentioned(event, message, self_id)
+    has_reply = bool(_extract_reply_platform_id(event) or _extract_reply_platform_id(message))
+
+    # 检查跨适配器助手回声 (Echo Isolation)
+    # 必须在媒体物化、会话上下文创建、策略判定以及 LLM 之前拦截
+    try:
+        from app.adapters.outbound_tracker import get_outbound_tracker
+        is_echo, echo_reason = get_outbound_tracker().is_assistant_echo(
+            content=raw_message_text,
+            platform=platform,
+            group_id=group_id,
+            is_mention=is_at,
+            is_reply=has_reply,
+            sender_id=user_id,
+        )
+        if is_echo:
+            logger.info("OneBot 拦截跨适配器助手回声: user_id=%s group_id=%s reason=%s", user_id, group_id, echo_reason)
+            return
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.debug("OneBot 回声检查异常: %s", e)
+
     # Match raw text before media materialization. Processed content is checked
     # again later so adapters can still expose normalized command syntax.
     raw_pre_llm_match = match_pre_llm_command(raw_message_text, platform)

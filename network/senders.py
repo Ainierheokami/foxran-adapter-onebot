@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import uuid
 from typing import Any, Dict, Optional, Tuple
@@ -74,29 +74,68 @@ class OneBotReplySenderBase:
         group_id = target.get("group_id")
         user_id = target.get("user_id")
 
-        if message_type == "group" and group_id:
-            await self._send_reply_parts(
-                reply,
-                message_action="send_group_msg",
-                message_target={"group_id": _coerce_int(group_id)},
-                upload_action="upload_group_file",
-                upload_target={"group_id": _coerce_int(group_id)},
-                echo=echo,
+        rec_id = None
+        try:
+            from app.adapters.outbound_tracker import get_outbound_tracker
+            rec_id = get_outbound_tracker().register_outbound(
+                str(reply), platform="onebot", group_id=group_id
             )
-            self._track_outbound_reply(reply)
-            return
+        except Exception:
+            pass
+
+        if message_type == "group" and group_id:
+            try:
+                await self._send_reply_parts(
+                    reply,
+                    message_action="send_group_msg",
+                    message_target={"group_id": _coerce_int(group_id)},
+                    upload_action="upload_group_file",
+                    upload_target={"group_id": _coerce_int(group_id)},
+                    echo=echo,
+                )
+                if rec_id:
+                    try:
+                        from app.adapters.outbound_tracker import get_outbound_tracker
+                        get_outbound_tracker().mark_outbound_sent(rec_id)
+                    except Exception:
+                        pass
+                self._track_outbound_reply(reply)
+                return
+            except Exception:
+                if rec_id:
+                    try:
+                        from app.adapters.outbound_tracker import get_outbound_tracker
+                        get_outbound_tracker().mark_outbound_failed(rec_id)
+                    except Exception:
+                        pass
+                raise
 
         if user_id:
-            await self._send_reply_parts(
-                reply,
-                message_action="send_private_msg",
-                message_target={"user_id": _coerce_int(user_id)},
-                upload_action="upload_private_file",
-                upload_target={"user_id": _coerce_int(user_id)},
-                echo=echo,
-            )
-            self._track_outbound_reply(reply)
-            return
+            try:
+                await self._send_reply_parts(
+                    reply,
+                    message_action="send_private_msg",
+                    message_target={"user_id": _coerce_int(user_id)},
+                    upload_action="upload_private_file",
+                    upload_target={"user_id": _coerce_int(user_id)},
+                    echo=echo,
+                )
+                if rec_id:
+                    try:
+                        from app.adapters.outbound_tracker import get_outbound_tracker
+                        get_outbound_tracker().mark_outbound_sent(rec_id)
+                    except Exception:
+                        pass
+                self._track_outbound_reply(reply)
+                return
+            except Exception:
+                if rec_id:
+                    try:
+                        from app.adapters.outbound_tracker import get_outbound_tracker
+                        get_outbound_tracker().mark_outbound_failed(rec_id)
+                    except Exception:
+                        pass
+                raise
 
         logger.warning("OneBot 回复丢弃：缺少目标信息")
 
