@@ -86,6 +86,49 @@ class GroupHistoryOnlyTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(process_calls), 1)
         self.assertFalse(process_calls[0]["message_data"]["materialize_media"])
         self.assertEqual(process_calls[0]["message_data"]["session_id"], session.session_id)
+        self.assertEqual(
+            session.history[0].metadata["conversation_facts"],
+            {
+                "trigger_reason": "probability_miss",
+                "is_group": True,
+                "bot_self_id": "874498833",
+                "mentioned_ids": [],
+                "explicit_mention_self": False,
+                "reply_to_platform_id": "",
+                "reply_to_self": False,
+            },
+        )
+
+    def test_platform_facts_extract_all_mention_targets_without_semantic_guessing(self):
+        event = {
+            "message": [
+                {"type": "at", "data": {"qq": "third-party"}},
+                {"type": "text", "data": {"text": "你好"}},
+            ],
+            "raw_message": "[CQ:at,qq=third-party] 你好",
+        }
+
+        self.assertEqual(module._extract_mentioned_ids(event), ["third-party"])
+        self.assertEqual(
+            module._conversation_facts(
+                decision_reason="probability_hit",
+                message_type="group",
+                self_id="bot",
+                mentioned_ids=["third-party"],
+                explicit_mention_self=False,
+                reply_to_platform_id=None,
+                reply_to_self=False,
+            ),
+            {
+                "trigger_reason": "probability_hit",
+                "is_group": True,
+                "bot_self_id": "bot",
+                "mentioned_ids": ["third-party"],
+                "explicit_mention_self": False,
+                "reply_to_platform_id": "",
+                "reply_to_self": False,
+            },
+        )
 
     async def test_reset_command_bypasses_reply_probability_and_llm(self):
         processed = SimpleNamespace(

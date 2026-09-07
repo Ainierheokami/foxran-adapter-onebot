@@ -114,6 +114,70 @@ def is_mentioned(event: Dict[str, Any], message: Any, self_id: Any) -> bool:
     return False
 
 
+def _extract_mentioned_ids(*values: Any) -> list[str]:
+    """Return platform mention targets without inferring conversational meaning."""
+    found: list[str] = []
+
+    def add(value: Any) -> None:
+        candidate = str(value or "").strip()
+        if candidate and candidate not in found:
+            found.append(candidate)
+
+    def visit(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+            return
+        if isinstance(value, dict):
+            if str(value.get("type") or "").lower() in {"at", "poke"}:
+                data = value.get("data") or {}
+                if isinstance(data, dict):
+                    add(data.get("qq") or data.get("id") or data.get("user_id"))
+            for key in ("message", "raw_message"):
+                if key in value:
+                    visit(value.get(key))
+            return
+        text = str(value or "")
+        patterns = (
+            r"\[(?:CQ:)?(?:at|poke)\b(?P<params>[^\]]*)\]",
+            r"\[at\s*,\s*id\s*=\s*(?P<id>[^\],\s]+)",
+        )
+        for pattern in patterns:
+            for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+                direct_id = match.groupdict().get("id")
+                if direct_id:
+                    add(direct_id)
+                    continue
+                params = _parse_segment_params((match.groupdict().get("params") or "").lstrip(","))
+                add(params.get("qq") or params.get("id") or params.get("user_id"))
+
+    for item in values:
+        visit(item)
+    return found
+
+
+def _conversation_facts(
+    *,
+    decision_reason: str,
+    message_type: str,
+    self_id: Any,
+    mentioned_ids: list[str],
+    explicit_mention_self: bool,
+    reply_to_platform_id: Optional[str],
+    reply_to_self: bool,
+) -> Dict[str, Any]:
+    """Build factual input for the model; no semantic addressee is decided here."""
+    return {
+        "trigger_reason": str(decision_reason or ""),
+        "is_group": str(message_type or "").lower() == "group",
+        "bot_self_id": str(self_id or ""),
+        "mentioned_ids": list(dict.fromkeys(str(item) for item in mentioned_ids if str(item))),
+        "explicit_mention_self": bool(explicit_mention_self),
+        "reply_to_platform_id": str(reply_to_platform_id or ""),
+        "reply_to_self": bool(reply_to_self),
+    }
+
+
 def _parse_segment_params(params_str: str) -> Dict[str, str]:
     params: Dict[str, str] = {}
     for part in str(params_str or "").split(","):
@@ -373,6 +437,8 @@ async def handle_onebot_event(
     metrics.track_adapter_message(platform, "in", session_id_temp, raw_message_text)
 
     is_at = is_mentioned(event, message, self_id)
+    explicit_mention_self = is_at
+    mentioned_ids = _extract_mentioned_ids(event, message)
     has_reply = bool(_extract_reply_platform_id(event) or _extract_reply_platform_id(message))
 
     # 检查跨适配器助手回声 (Echo Isolation)
@@ -464,14 +530,16 @@ async def handle_onebot_event(
 
     # [新增] 检查是否回复了 Bot 之前的消息
     # 如果用户没有直接 @Bot，但是回复（引用）了 Bot 之前发出的消息，同样将其视为被 @（触发交互）
-    if not is_at:
-        reply_id_platform = _extract_reply_platform_id(event) or _extract_reply_platform_id(message)
-        if reply_id_platform:
-            message_id = resolve_message_id_from_platform(session_ctx, reply_id_platform)
-            if message_id:
-                msg_obj = session_ctx.get_message_by_id(message_id)
-                # 兼容 role 可能的值：assistant 或 bot
-                if msg_obj and msg_obj.role in ("assistant", "bot"):
+    reply_id_platform = _extract_reply_platform_id(event) or _extract_reply_platform_id(message)
+    reply_to_self = False
+    if reply_id_platform:
+        message_id = resolve_message_id_from_platform(session_ctx, reply_id_platform)
+        if message_id:
+            msg_obj = session_ctx.get_message_by_id(message_id)
+            # 兼容 role 可能的值：assistant 或 bot
+            if msg_obj and msg_obj.role in ("assistant", "bot"):
+                reply_to_self = True
+                if not is_at:
                     is_at = True
                     logger.info(f"检测到用户引用了 Bot 的历史消息({reply_id_platform})，触发自动回复响应。")
 
@@ -584,6 +652,15 @@ async def handle_onebot_event(
             raw_content=processed.original,
             metadata={
                 "message_parts": _enrich_reply_parts(processed.parts, session_ctx),
+                "conversation_facts": _conversation_facts(
+                    decision_reason=decision.reason,
+                    message_type=message_type,
+                    self_id=self_id,
+                    mentioned_ids=mentioned_ids,
+                    explicit_mention_self=explicit_mention_self,
+                    reply_to_platform_id=reply_id_platform,
+                    reply_to_self=reply_to_self,
+                ),
             },
         )
         bind_platform_id(session_ctx, current_message, platform_id)
@@ -620,6 +697,15 @@ async def handle_onebot_event(
     proc = active_processors.get(session_ctx.session_id)
     metadata = {
         "message_parts": _enrich_reply_parts(processed.parts, session_ctx),
+        "conversation_facts": _conversation_facts(
+            decision_reason=decision.reason,
+            message_type=message_type,
+            self_id=self_id,
+            mentioned_ids=mentioned_ids,
+            explicit_mention_self=explicit_mention_self,
+            reply_to_platform_id=reply_id_platform,
+            reply_to_self=reply_to_self,
+        ),
     }
     if proc and proc.has_pending_work():
         metadata.update({
