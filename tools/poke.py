@@ -1,4 +1,4 @@
-﻿from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional
 from app.tools.base import BaseTool, ToolType, ToolResult
 from app.logger import setup_logger
 
@@ -51,7 +51,7 @@ class PokeTool(BaseTool):
             )
             
             if response and response.get("status") in ("ok", "success"):
-                return ToolResult(self.name, True, f"戳一戳发动成功 (目标ID: {user_id})")
+                return ToolResult(self.name, True)
             else:
                 return ToolResult(self.name, False, error=f"戳一戳发送可能遇到问题，返回: {response.get('msg') if response else '未知错误'}。注意：部分客户端可能不支持该动作节点。")
                 
