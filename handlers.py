@@ -8,21 +8,9 @@ import time
 
 from app.logger import setup_logger
 from app.adapters.onebot_v11.config import onebot_v11_config
-from app.api.core import get_or_create_session_context, active_processors
-from app.adapters.control.pre_llm_commands import (
-    execute_pre_llm_match,
-    match_pre_llm_command,
-)
-import app.api.core as api_core
-from app.tasks.core.session_processor import SessionProcessor
-from app.context.context_manager import Message, SessionContext
-from app.data_mappers import get_message_processor
-from app.adapters.control.policy import platform_policy
-from app.adapters.message_protocol import (
-    bind_platform_id,
-    make_user_message,
-    resolve_message_id_from_platform,
-)
+from app.context.context_manager import SessionContext
+from app.inbound import ConversationRef, InboundEvent, PlatformFacts, Sender, SessionIdOptions
+from app.inbound import pipeline
 from app.adapters.onebot_v11.store.action_tracker import onebot_action_tracker
 from app.adapters.onebot_v11.store.role_store import (
     UNKNOWN_COOLDOWN as _BOT_GROUP_ROLE_COOLDOWN,
@@ -31,8 +19,6 @@ from app.adapters.onebot_v11.store.role_store import (
     normalize_group_role,
     remember_bot_role,
 )
-from app.utils.metrics_manager import metrics
-from app.message import MessageChain, Reply, Text
 
 
 logger = setup_logger(__name__)
@@ -70,25 +56,6 @@ def _is_self_sent_message(event: Dict[str, Any]) -> bool:
         or event.get("message_sent_type") == "self"
         or event.get("sub_type") == "self"
     )
-
-
-def build_session_id(
-    message_type: Optional[str],
-    user_id: str,
-    group_id: Optional[int],
-    self_id: Optional[str],
-    account_id: str = "default",
-    cfg: Optional[Dict[str, Any]] = None,
-) -> str:
-    cfg = cfg or onebot_v11_config.get_account(account_id) or onebot_v11_config.get_config()
-    prefix = cfg.get("session_id_prefix", "onebot")
-    use_group = cfg.get("use_group_as_session", True)
-    include_bot = cfg.get("session_id_include_bot_id", True)
-    account_part = "" if account_id == "default" else f"{account_id}:"
-    bot_part = f"{self_id}:" if include_bot and self_id else ""
-    if use_group and message_type == "group" and group_id:
-        return f"{prefix}:{account_part}{bot_part}group:{group_id}"
-    return f"{prefix}:{account_part}{bot_part}user:{user_id}"
 
 
 def is_mentioned(event: Dict[str, Any], message: Any, self_id: Any) -> bool:
@@ -154,28 +121,6 @@ def _extract_mentioned_ids(*values: Any) -> list[str]:
     for item in values:
         visit(item)
     return found
-
-
-def _conversation_facts(
-    *,
-    decision_reason: str,
-    message_type: str,
-    self_id: Any,
-    mentioned_ids: list[str],
-    explicit_mention_self: bool,
-    reply_to_platform_id: Optional[str],
-    reply_to_self: bool,
-) -> Dict[str, Any]:
-    """Build factual input for the model; no semantic addressee is decided here."""
-    return {
-        "trigger_reason": str(decision_reason or ""),
-        "is_group": str(message_type or "").lower() == "group",
-        "bot_self_id": str(self_id or ""),
-        "mentioned_ids": list(dict.fromkeys(str(item) for item in mentioned_ids if str(item))),
-        "explicit_mention_self": bool(explicit_mention_self),
-        "reply_to_platform_id": str(reply_to_platform_id or ""),
-        "reply_to_self": bool(reply_to_self),
-    }
 
 
 def _parse_segment_params(params_str: str) -> Dict[str, str]:
@@ -319,534 +264,6 @@ async def _fetch_and_cache_self_role(
             session_ctx.session_notes["self_role"] = "member"
             logger.error(f"获取 Bot({s_id}) 自身群({g_id}) 权限发生异常: {e}，已进入 60s 重试冷却退避。")
 
-async def handle_onebot_event(
-    event: Dict[str, Any],
-    sender_factory: Callable[[SessionContext], Any],
-    account_id: str = "default",
-) -> None:
-    post_type = (event.get("post_type") or "message").lower()
-    cfg = onebot_v11_config.get_account(account_id) or onebot_v11_config.get_config()
-    log_cfg = cfg.get("logging") or {}
-    platform = cfg.get("platform_name", "onebot")
-    
-    # 拦截戳一戳事件，将其伪装成消息事件传递给核心处理
-    if post_type == "notice" and event.get("sub_type") == "poke":
-        post_type = "message"
-        event["post_type"] = "message"
-        event["message_type"] = "group" if event.get("group_id") else "private"
-        target_id = event.get("target_id")
-        event["message"] = f"[CQ:poke,qq={target_id}]"
-        logger.info(f"OneBot 拦截到戳一戳事件，转换为消息处理: target={target_id}")
-
-    if _is_self_sent_message(event):
-        await _handle_onebot_self_sent_event(event, sender_factory, platform, log_cfg, account_id, cfg)
-        return
-
-    if post_type != "message":
-        _log_onebot_non_message(event)
-        return
-
-    if not api_core.core_agent:
-        logger.warning("核心代理未就绪：忽略 OneBot 事件")
-        return
-
-    message = event.get("message")
-    if not isinstance(message, list):
-        message = event.get("raw_message") or message or ""
-
-    message_type = event.get("message_type")
-    group_id = event.get("group_id")
-    self_id = event.get("self_id")
-    user_id = str(event.get("user_id") or "onebot_user")
-    sender_info = event.get("sender") or {}
-    user_name = sender_info.get("nickname") or sender_info.get("card") or "OneBot User"
-    sender_role = sender_info.get("role")
-    if sender_role in ("owner", "admin"):
-        role_map = {"owner": "群主", "admin": "管理员"}
-        user_name = f"{user_name} ({role_map[sender_role]})"
-
-    # Track metrics for incoming message
-    session_id_temp = build_session_id(
-        message_type=message_type,
-        user_id=user_id,
-        group_id=group_id,
-        self_id=str(self_id) if self_id is not None else None,
-        account_id=account_id,
-        cfg=cfg,
-    )
-    raw_message_text = str(event.get("raw_message") or message or "")
-    if len(raw_message_text) > 1000:
-        raw_message_text = raw_message_text[:1000] + "..."
-    metrics.track_adapter_message(platform, "in", session_id_temp, raw_message_text)
-
-    is_at = is_mentioned(event, message, self_id)
-    explicit_mention_self = is_at
-    mentioned_ids = _extract_mentioned_ids(event, message)
-    has_reply = bool(_extract_reply_platform_id(event) or _extract_reply_platform_id(message))
-
-    # 检查跨适配器助手回声 (Echo Isolation)
-    # 必须在媒体物化、会话上下文创建、策略判定以及 LLM 之前拦截
-    try:
-        from app.adapters.outbound_tracker import get_outbound_tracker
-        is_echo, echo_reason = get_outbound_tracker().is_assistant_echo(
-            content=raw_message_text,
-            platform=platform,
-            group_id=group_id,
-            is_mention=is_at,
-            is_reply=has_reply,
-            sender_id=user_id,
-        )
-        if is_echo:
-            logger.info("OneBot 拦截跨适配器助手回声: user_id=%s group_id=%s reason=%s", user_id, group_id, echo_reason)
-            return
-    except ImportError:
-        pass
-    except Exception as e:
-        logger.debug("OneBot 回声检查异常: %s", e)
-
-    # Match raw text before media materialization. Processed content is checked
-    # again later so adapters can still expose normalized command syntax.
-    raw_pre_llm_match = match_pre_llm_command(raw_message_text, platform)
-    # Do not download every image posted in a busy group. Materialization is
-    # enabled immediately for private/mentioned messages and, below, after the
-    # reply policy confirms another group message should receive a response.
-    media_materialized = (
-        raw_pre_llm_match is None
-        and ((message_type or "").lower() != "group" or is_at)
-    )
-
-    message_processor = get_message_processor()
-    async def process_with_media_policy(materialize_media: bool):
-        return await message_processor.process_incoming_message(
-            platform=platform,
-            raw_content=message,
-            message_data={
-                "role": "user",
-                "content": message,
-                "user_id": user_id,
-                "user_name": user_name,
-                "session_id": session_id_temp,
-                "materialize_media": materialize_media,
-            },
-        )
-
-    processed = None
-    try:
-        processed = await process_with_media_policy(media_materialized)
-    except Exception as e:
-        logger.error(f"OneBot 入站处理失败: {e}")
-        return
-
-    _log_onebot_message(
-        platform=platform,
-        message_type=message_type,
-        user_id=user_id,
-        user_name=user_name,
-        group_id=group_id,
-        self_id=self_id,
-        processed=processed,
-        event=event,
-        log_cfg=log_cfg,
-    )
-
-    session_id = build_session_id(
-        message_type=message_type,
-        user_id=user_id,
-        group_id=group_id,
-        self_id=str(self_id) if self_id is not None else None,
-        account_id=account_id,
-        cfg=cfg,
-    )
-    
-    try:
-        session_ctx = await get_or_create_session_context(
-            session_id=session_id,
-            user_id=user_id,
-            user_name=user_name,
-            platform=platform,
-            bot_name=None,
-            history_dicts=None,
-        )
-    except Exception as e:
-        logger.error(f"创建会话上下文失败: {e}")
-        return
-
-    # [新增] 检查是否回复了 Bot 之前的消息
-    # 如果用户没有直接 @Bot，但是回复（引用）了 Bot 之前发出的消息，同样将其视为被 @（触发交互）
-    reply_id_platform = _extract_reply_platform_id(event) or _extract_reply_platform_id(message)
-    reply_to_self = False
-    if reply_id_platform:
-        message_id = resolve_message_id_from_platform(session_ctx, reply_id_platform)
-        if message_id:
-            msg_obj = session_ctx.get_message_by_id(message_id)
-            # 兼容 role 可能的值：assistant 或 bot
-            if msg_obj and msg_obj.role in ("assistant", "bot"):
-                reply_to_self = True
-                if not is_at:
-                    is_at = True
-                    logger.info(f"检测到用户引用了 Bot 的历史消息({reply_id_platform})，触发自动回复响应。")
-
-    decision = platform_policy.evaluate(
-        platform=platform,
-        message_type=message_type,
-        user_id=user_id,
-        group_id=group_id,
-        is_mention=is_at,
-        bot_id=str(self_id) if self_id is not None else None,
-    )
-    if not decision.allowed:
-        logger.debug(f"OneBot 消息被白名单策略拦截: reason={decision.reason}")
-        return
-
-    pre_llm_match = raw_pre_llm_match or match_pre_llm_command(processed.internal, platform)
-    if pre_llm_match:
-        is_private = (message_type or "").lower() == "private"
-        can_execute = is_private or is_at or platform_policy.is_admin(
-            platform=platform,
-            bot_id=str(self_id) if self_id is not None else None,
-            user_id=user_id,
-            message_type=message_type,
-            group_id=group_id,
-        )
-        if not can_execute:
-            logger.info("OneBot 前置命令被忽略：群聊中未 @ 且非管理员。")
-            return
-        session_ctx.session_notes["onebot_target"] = {
-            "message_type": message_type,
-            "user_id": user_id,
-            "group_id": group_id,
-            "self_id": self_id,
-            "sender_role": sender_info.get("role", "member"),
-        }
-        session_ctx.session_notes["onebot_account_id"] = account_id
-        session_ctx.set_websocket(sender_factory(session_ctx))
-        result = await execute_pre_llm_match(
-            pre_llm_match,
-            session_ctx,
-            active_processors,
-            metadata={
-                "platform": platform,
-                "message_type": message_type,
-                "user_id": user_id,
-                "group_id": group_id,
-                "is_mention": is_at,
-                "event": event,
-            },
-        )
-        await session_ctx.send_assistant_message(result.reply)
-        logger.info(
-            "OneBot 已在 LLM 前执行命令: session=%s command=%s",
-            session_ctx.session_id,
-            result.command,
-        )
-        return
-
-    if is_at and not media_materialized:
-        processed = await process_with_media_policy(True)
-        media_materialized = True
-
-    command = _parse_group_command(processed.internal)
-    if command and message_type == "group":
-
-        session_ctx.session_notes["onebot_target"] = {
-            "message_type": message_type,
-            "user_id": user_id,
-            "group_id": group_id,
-            "self_id": self_id,
-            "sender_role": sender_info.get("role", "member")
-        }
-        session_ctx.set_websocket(sender_factory(session_ctx))
-
-        if not is_at:
-            await session_ctx.send_assistant_message("请 @我 后再使用群管理命令")
-            return
-        if not platform_policy.is_admin(
-            platform=platform,
-            bot_id=str(self_id) if self_id is not None else None,
-            user_id=user_id,
-            message_type=message_type,
-            group_id=group_id,
-        ):
-            await session_ctx.send_assistant_message("权限不足：仅管理员可执行该命令")
-            return
-
-        handled, reply = await _handle_group_command(
-            command=command,
-            platform=platform,
-            bot_id=str(self_id) if self_id is not None else None,
-            group_id=group_id,
-        )
-        if handled and reply:
-            await session_ctx.send_assistant_message(reply)
-        return
-
-    if decision.allowed and decision.should_reply and not media_materialized:
-        processed = await process_with_media_policy(True)
-        media_materialized = True
-    if not decision.should_reply:
-        platform_id = event.get("message_id")
-        enriched_segments = await _enrich_reply_segments(processed.segments, session_ctx)
-        current_message = make_user_message(
-            segments=enriched_segments,
-            user_id=user_id,
-            user_name=user_name,
-            platform=platform,
-            platform_id=platform_id,
-            raw_content=processed.original,
-            metadata={
-                "conversation_facts": _conversation_facts(
-                    decision_reason=decision.reason,
-                    message_type=message_type,
-                    self_id=self_id,
-                    mentioned_ids=mentioned_ids,
-                    explicit_mention_self=explicit_mention_self,
-                    reply_to_platform_id=reply_id_platform,
-                    reply_to_self=reply_to_self,
-                ),
-            },
-        )
-        bind_platform_id(session_ctx, current_message, platform_id)
-        session_ctx.add_history_message(message=current_message)
-        await session_ctx.broadcast_user_message(current_message)
-        logger.info("OneBot 消息仅记录历史：回复策略未触发本轮响应（reason=%s）。", decision.reason)
-        return
-
-    logger.info(f"决定回复消息: reason={decision.reason}, is_at={is_at}, self_id={self_id}")
-
-    session_ctx.session_notes["onebot_target"] = {
-        "message_type": message_type,
-        "user_id": user_id,
-        "group_id": group_id,
-        "self_id": self_id,
-        "sender_role": sender_info.get("role", "member")
-    }
-    session_ctx.session_notes["onebot_account_id"] = account_id
-    session_ctx.set_websocket(sender_factory(session_ctx))
-
-    await _fetch_and_cache_self_role(session_ctx, message_type, group_id, self_id, session_ctx.websocket)
-
-    if session_ctx.session_id not in active_processors:
-        try:
-            processor = SessionProcessor(session_ctx, api_core.core_agent)
-            await processor.start()
-            active_processors[session_ctx.session_id] = processor
-        except Exception as e:
-            logger.error(f"启动会话处理器失败: {e}")
-            return
-
-    enriched_segments = await _enrich_reply_segments(processed.segments, session_ctx)
-    platform_id = event.get("message_id")
-    proc = active_processors.get(session_ctx.session_id)
-    metadata = {
-        "conversation_facts": _conversation_facts(
-            decision_reason=decision.reason,
-            message_type=message_type,
-            self_id=self_id,
-            mentioned_ids=mentioned_ids,
-            explicit_mention_self=explicit_mention_self,
-            reply_to_platform_id=reply_id_platform,
-            reply_to_self=reply_to_self,
-        ),
-    }
-    if proc and proc.has_pending_work():
-        metadata.update({
-            "interjection": True,
-            "interjection_reason": "agent_running",
-        })
-    current_message = make_user_message(
-        segments=enriched_segments,
-        user_id=user_id,
-        user_name=user_name,
-        platform=platform,
-        platform_id=platform_id,
-        raw_content=processed.original,
-        metadata=metadata,
-    )
-    bind_platform_id(session_ctx, current_message, platform_id)
-
-    if message_type == "group" and not metadata.get("interjection"):
-        # 先持久化以保证重启后不丢失（后续处理会跳过重复写入）
-        session_ctx.add_history_message(message=current_message)
-
-    await session_ctx.broadcast_user_message(current_message)
-    await session_ctx.handle_new_message(current_message)
-
-
-async def _handle_onebot_self_sent_event(
-    event: Dict[str, Any],
-    sender_factory: Callable[[SessionContext], Any],
-    platform: str,
-    log_cfg: Dict[str, Any],
-    account_id: str,
-    cfg: Dict[str, Any],
-) -> None:
-    message_type = event.get("message_type")
-    group_id = event.get("group_id")
-    self_id = event.get("self_id") or event.get("user_id")
-    user_id = str(event.get("user_id") or self_id or "onebot_bot")
-    sender_info = event.get("sender") or {}
-    bot_name = sender_info.get("nickname") or sender_info.get("card") or "OneBot Bot"
-    raw_message = event.get("raw_message") or event.get("message") or ""
-    message_id = event.get("message_id")
-
-    session_id = build_session_id(
-        message_type=message_type,
-        user_id=user_id,
-        group_id=group_id,
-        self_id=str(self_id) if self_id is not None else None,
-        account_id=account_id,
-        cfg=cfg,
-    )
-
-    try:
-        session_ctx = await get_or_create_session_context(
-            session_id=session_id,
-            user_id=user_id,
-            user_name=bot_name,
-            platform=platform,
-            bot_name=None,
-            history_dicts=None,
-        )
-    except Exception as e:
-        logger.error(f"处理 OneBot 自身消息回显时创建会话上下文失败: {e}")
-        return
-
-    role = _cache_bot_group_role_from_event(event)
-    if role:
-        session_ctx.session_notes["self_role"] = role
-        session_ctx.session_notes["onebot_last_self_sent"] = {
-            "group_id": group_id,
-            "self_id": self_id,
-            "sender_role": role,
-            "message_id": message_id,
-            "time": event.get("time"),
-        }
-        logger.info(f"已从 Bot 自身消息回显缓存 Bot({self_id}) 在群({group_id}) 的权限: {role}")
-
-    session_ctx.session_notes["onebot_target"] = {
-        "message_type": message_type,
-        "user_id": user_id,
-        "group_id": group_id,
-        "self_id": self_id,
-        "sender_role": role or sender_info.get("role", "member"),
-    }
-    session_ctx.session_notes["onebot_account_id"] = account_id
-    session_ctx.set_websocket(sender_factory(session_ctx))
-
-    if message_id is not None:
-        _bind_self_sent_platform_message_id(session_ctx, raw_message, message_id, platform, bot_name, user_id)
-
-    metrics.track_adapter_message(
-        platform,
-        "out_echo",
-        session_id,
-        str(raw_message)[:1000],
-    )
-
-    if log_cfg.get("log_message", True):
-        logger.info(
-            "OneBot 收到 Bot 自身消息回显 [群:%s][Bot:%s][role:%s] message_id=%s: %s",
-            group_id,
-            self_id,
-            role or sender_info.get("role", "unknown"),
-            message_id,
-            str(raw_message)[:200],
-        )
-    if log_cfg.get("debug_full_event", True):
-        logger.debug(f"OneBot 自身消息回显完整事件: {json.dumps(event, ensure_ascii=False)}")
-
-
-def _bind_self_sent_platform_message_id(
-    session_ctx: SessionContext,
-    raw_message: Any,
-    message_id: Any,
-    platform: str,
-    bot_name: str,
-    bot_user_id: str,
-) -> None:
-    """Attach the platform id of a ``message_sent`` echo to the assistant message it came from.
-
-    History stores segments (core-refactor R2), so the echo is decoded and
-    compared by its text, which survives the platform rewriting media URLs.
-    """
-    echo = _decode_onebot_message(platform, raw_message)
-    echo_text = echo.plain_text().strip()
-
-    for msg in reversed(session_ctx.history):
-        if getattr(msg, "role", None) != "assistant":
-            continue
-        if getattr(msg, "platform_message_id", None):
-            continue
-        sent_text = msg.segments.plain_text().strip()
-        if echo_text and sent_text and (echo_text == sent_text or echo_text in sent_text or sent_text in echo_text):
-            session_ctx.set_platform_id_for_message(msg.message_id, message_id)
-            logger.debug(
-                "已通过 OneBot message_sent 回显绑定 assistant 消息平台 ID: message=%s platform=%s",
-                msg.message_id,
-                message_id,
-            )
-            return
-
-    if not echo.is_empty():
-        message = Message(
-            role="assistant",
-            segments=echo,
-            platform=platform,
-            platform_message_id=str(message_id),
-            metadata={
-                "part_type": "send",
-                "status": "completed",
-            },
-            user_id=bot_user_id,
-            user_name=bot_name,
-            raw_content=str(raw_message),
-        )
-        session_ctx.add_history_message(message=message)
-
-
-def _decode_onebot_message(platform: str, raw_message: Any) -> MessageChain:
-    try:
-        return get_message_processor().platform_registry.get_adapter(platform).from_platform_format(raw_message)
-    except Exception:
-        return MessageChain([str(raw_message)] if raw_message else [])
-
-
-def _log_onebot_message(
-    platform: str,
-    message_type: Optional[str],
-    user_id: str,
-    user_name: str,
-    group_id: Optional[int],
-    self_id: Optional[str],
-    processed: Any,
-    event: Dict[str, Any],
-    log_cfg: Dict[str, Any],
-) -> None:
-    if not log_cfg.get("log_message", True):
-        return
-
-    source_info = ""
-    if message_type == "group" and group_id is not None:
-        source_info = f"[群:{group_id}]"
-    elif message_type == "private":
-        source_info = f"[私聊]"
-    else:
-        source_info = f"[{message_type or '未知'}]"
-
-    bot_info = f"[Bot:{self_id}]" if self_id else ""
-    user_info = f"{user_name}({user_id})"
-    
-    compressed = getattr(processed, "compressed", None) or getattr(processed, "original", "")
-    original = getattr(processed, "original", None)
-    
-    log_msg = f"OneBot 收到消息 {source_info}{bot_info} {user_info}: {compressed}"
-    logger.info(log_msg)
-
-    if log_cfg.get("debug_full_message", True) and original is not None:
-        logger.debug(f"OneBot 收到消息(完整): {original}")
-    if log_cfg.get("debug_full_event", True):
-        logger.debug(f"OneBot 事件完整内容: {json.dumps(event, ensure_ascii=False)}")
-
 
 def _log_onebot_non_message(event: Dict[str, Any]) -> None:
     post_type = (event.get("post_type") or "unknown").lower()
@@ -878,191 +295,209 @@ _REPLY_PREVIEW_LIMIT = 120
 _REPLY_FETCH_FAILED = "[消息获取失败]"
 
 
-def _sanitize_reply_preview(text: str) -> str:
-    # The preview is rendered inside a ``[reply,...]`` agent tag.
-    return text.replace("\n", " ").replace("]", ")").replace(",", "，")
+class OneBotBinding:
+    """How the framework pipeline reaches back into OneBot for one event."""
 
+    def __init__(
+        self,
+        event: Dict[str, Any],
+        sender_factory: Callable[[SessionContext], Any],
+        account_id: str,
+        platform: str,
+        log_cfg: Dict[str, Any],
+    ) -> None:
+        self.event = event
+        self.sender_factory = sender_factory
+        self.account_id = account_id
+        self.platform = platform
+        self.log_cfg = log_cfg
 
-async def _enrich_reply_segments(segments: MessageChain, session_ctx: SessionContext) -> MessageChain:
-    """Resolve reply targets to internal/platform ids and attach a short preview of the quoted message."""
-    if not any(isinstance(seg, Reply) for seg in segments):
-        return segments
+    def _target(self, sender_role: Optional[str] = None) -> Dict[str, Any]:
+        event = self.event
+        return {
+            "message_type": event.get("message_type"),
+            "user_id": str(event.get("user_id") or "onebot_user"),
+            "group_id": event.get("group_id"),
+            "self_id": event.get("self_id"),
+            "sender_role": sender_role or (event.get("sender") or {}).get("role", "member"),
+        }
 
-    async def fetch_preview_from_platform(reply_id: str) -> Optional[str]:
+    def bind_session(self, session_ctx: SessionContext) -> None:
+        # REMOVE-IN: R3b — replies get addressed by ConversationRef instead of session notes.
+        session_ctx.session_notes["onebot_target"] = self._target()
+        session_ctx.session_notes["onebot_account_id"] = self.account_id
+        session_ctx.set_websocket(self.sender_factory(session_ctx))
+
+    async def before_agent(self, session_ctx: SessionContext) -> None:
+        event = self.event
+        await _fetch_and_cache_self_role(
+            session_ctx, event.get("message_type"), event.get("group_id"), event.get("self_id"), session_ctx.websocket
+        )
+
+    async def fetch_message(self, session_ctx: SessionContext, platform_message_id: str) -> Any:
         sender = session_ctx.websocket
         if not sender:
             return None
-        params: Dict[str, Any] = {"message_id": int(reply_id)} if reply_id.isdigit() else {"message_id": reply_id}
+        params: Dict[str, Any] = (
+            {"message_id": int(platform_message_id)} if platform_message_id.isdigit() else {"message_id": platform_message_id}
+        )
         response = await onebot_action_tracker.request(sender, "get_msg", params, timeout=3.0)
         if not response or response.get("status") not in ("ok", "success"):
             return None
         data = response.get("data")
         if not isinstance(data, dict):
             return None
-        raw_message = data.get("raw_message") or data.get("message")
-        if not raw_message:
-            return None
-        try:
-            from app.agent.codec import tag_codec
+        return data.get("raw_message") or data.get("message")
 
-            message_processor = get_message_processor()
-            processed = await message_processor.process_incoming_message(
-                platform=session_ctx.platform or "onebot",
-                raw_content=raw_message,
-                message_data={"role": "user", "content": raw_message},
+    def log_message(self, segments: Any) -> None:
+        if not self.log_cfg.get("log_message", True):
+            return
+        event = self.event
+        message_type = event.get("message_type")
+        group_id = event.get("group_id")
+        if message_type == "group" and group_id is not None:
+            source_info = f"[群:{group_id}]"
+        elif message_type == "private":
+            source_info = "[私聊]"
+        else:
+            source_info = f"[{message_type or '未知'}]"
+        self_id = event.get("self_id")
+        bot_info = f"[Bot:{self_id}]" if self_id else ""
+        sender = _sender_from_event(event)
+        logger.info(f"OneBot 收到消息 {source_info}{bot_info} {sender.name}({sender.id}): {segments.summary()}")
+        if self.log_cfg.get("debug_full_message", True):
+            logger.debug(f"OneBot 收到消息(完整): {event.get('raw_message') or event.get('message')}")
+        if self.log_cfg.get("debug_full_event", True):
+            logger.debug(f"OneBot 事件完整内容: {json.dumps(event, ensure_ascii=False)}")
+
+    def on_self_message(self, session_ctx: SessionContext) -> None:
+        event = self.event
+        role = _cache_bot_group_role_from_event(event)
+        if role:
+            session_ctx.session_notes["self_role"] = role
+            session_ctx.session_notes["onebot_last_self_sent"] = {
+                "group_id": event.get("group_id"),
+                "self_id": event.get("self_id"),
+                "sender_role": role,
+                "message_id": event.get("message_id"),
+                "time": event.get("time"),
+            }
+            logger.info(f"已从 Bot 自身消息回显缓存 Bot({event.get('self_id')}) 在群({event.get('group_id')}) 的权限: {role}")
+        target = self._target(sender_role=role)
+        target["user_id"] = str(event.get("user_id") or event.get("self_id") or "onebot_bot")
+        target["self_id"] = event.get("self_id") or event.get("user_id")
+        session_ctx.session_notes["onebot_target"] = target
+        session_ctx.session_notes["onebot_account_id"] = self.account_id
+        session_ctx.set_websocket(self.sender_factory(session_ctx))
+        if self.log_cfg.get("log_message", True):
+            logger.info(
+                "OneBot 收到 Bot 自身消息回显 [群:%s][Bot:%s][role:%s] message_id=%s: %s",
+                event.get("group_id"),
+                event.get("self_id"),
+                role or (event.get("sender") or {}).get("role", "unknown"),
+                event.get("message_id"),
+                str(event.get("raw_message") or event.get("message") or "")[:200],
             )
-            preview = tag_codec.render(message_processor.content_compressor.compress_sync(processed.segments)) or processed.internal
-        except Exception:
-            preview = str(raw_message)
-        return _sanitize_reply_preview(preview)
-
-    enriched = MessageChain()
-    for seg in segments:
-        if not isinstance(seg, Reply):
-            enriched.append(seg)
-            continue
-        ref = seg.ref
-        reply_id = (ref.message_id if ref.message_id is not None else ref.platform_message_id) or ""
-        if not reply_id:
-            enriched.append(Text(text=_REPLY_FETCH_FAILED))
-            continue
-        target_internal_id: Optional[str] = None
-        target_platform_id: Optional[str] = None
-        target_msg = session_ctx.get_message_by_id(reply_id)
-        if target_msg is not None:
-            target_internal_id = reply_id
-            target_platform_id = session_ctx.resolve_platform_message_id(reply_id)
-        else:
-            message_id = session_ctx.resolve_message_id_from_platform(reply_id)
-            if message_id:
-                target_internal_id = message_id
-                target_platform_id = reply_id
-                target_msg = session_ctx.get_message_by_id(message_id)
-        if not target_msg or not getattr(target_msg, "content", None):
-            preview = await fetch_preview_from_platform(reply_id)
-            if not preview:
-                enriched.append(seg.model_copy(update={"ref": ref.model_copy(update={"preview": _REPLY_FETCH_FAILED})}))
-                continue
-        else:
-            raw_preview = str(target_msg.content)
-            try:
-                preview = await get_message_processor().content_compressor.compress(raw_preview)
-            except Exception:
-                preview = raw_preview
-            preview = _sanitize_reply_preview(preview)
-        if len(preview) > _REPLY_PREVIEW_LIMIT:
-            preview = preview[:_REPLY_PREVIEW_LIMIT] + "..."
-        updates: Dict[str, Any] = {"preview": preview}
-        if target_internal_id:
-            updates["message_id"] = str(target_internal_id)
-        if target_platform_id:
-            updates["platform_message_id"] = str(target_platform_id)
-        enriched.append(seg.model_copy(update={"ref": ref.model_copy(update=updates)}))
-    return enriched
+        if self.log_cfg.get("debug_full_event", True):
+            logger.debug(f"OneBot 自身消息回显完整事件: {json.dumps(event, ensure_ascii=False)}")
 
 
-def _parse_group_command(content: str) -> Optional[Dict[str, Any]]:
-    text = re.sub(r"\[at,[^\]]+\]", "", content or "")
-    text = text.strip()
-    if not text.startswith("/"):
-        return None
-    if text.startswith("/响应本群"):
-        return {"type": "allow", "user": _extract_optional_user(text, "/响应本群")}
-    if text.startswith("/忽略本群"):
-        return {"type": "deny", "user": _extract_optional_user(text, "/忽略本群")}
-    if text.startswith("/默认回复概率"):
-        value = _extract_optional_user(text, "/默认回复概率")
-        return {"type": "probability_default", "value": value}
-    if text.startswith("/回复概率"):
-        value = _extract_optional_user(text, "/回复概率")
-        return {"type": "probability", "value": value}
-    return None
+def _sender_from_event(event: Dict[str, Any]) -> Sender:
+    sender_info = event.get("sender") or {}
+    name = sender_info.get("nickname") or sender_info.get("card") or "OneBot User"
+    role = sender_info.get("role")
+    role_labels = {"owner": "群主", "admin": "管理员"}
+    if role in role_labels:
+        name = f"{name} ({role_labels[role]})"
+    return Sender(id=str(event.get("user_id") or "onebot_user"), name=name, role=role)
 
 
-def _extract_optional_user(text: str, prefix: str) -> Optional[str]:
-    rest = text[len(prefix):].strip()
-    if not rest:
-        return None
-    token = rest.split()[0]
-    token = re.sub(r"\D", "", token)
-    return token or None
+def _session_options(cfg: Dict[str, Any]) -> SessionIdOptions:
+    return SessionIdOptions(
+        prefix=cfg.get("session_id_prefix", "onebot"),
+        use_group_as_session=cfg.get("use_group_as_session", True),
+        include_bot_id=cfg.get("session_id_include_bot_id", True),
+    )
 
 
-async def _handle_group_command(
-    command: Dict[str, Any],
-    platform: str,
-    bot_id: Optional[str],
-    group_id: Optional[int],
-) -> tuple[bool, str]:
-    try:
-        from app.config.policy_writer import update_whitelist_group, set_reply_probability
-    except Exception as e:
-        logger.error(f"加载策略写入器失败: {e}")
-        return True, "配置更新失败（内部错误）"
+def _conversation(platform: str, event: Dict[str, Any], account_id: str, user_id: str) -> ConversationRef:
+    group_id = event.get("group_id")
+    is_group = event.get("message_type") == "group" and group_id is not None
+    self_id = event.get("self_id")
+    return ConversationRef(
+        platform=platform,
+        scope="group" if is_group else "private",
+        id=str(group_id) if is_group else user_id,
+        account_id=account_id,
+        self_id=str(self_id) if self_id is not None else None,
+    )
 
-    if group_id is None:
-        if command["type"] != "probability_default":
-            return True, "当前命令仅适用于群聊"
 
-    if command["type"] == "allow":
-        ok, reason = update_whitelist_group(
-            platform=platform,
-            bot_id=bot_id,
-            group_id=str(group_id),
-            action="allow",
-            user_id=command.get("user"),
-        )
-        if ok:
-            return True, "已设置：响应本群"
-        return True, f"设置失败: {reason}"
+async def handle_onebot_event(
+    event: Dict[str, Any],
+    sender_factory: Callable[[SessionContext], Any],
+    account_id: str = "default",
+) -> None:
+    """Decode one OneBot v11 event and hand it to the framework pipeline."""
+    post_type = (event.get("post_type") or "message").lower()
+    cfg = onebot_v11_config.get_account(account_id) or onebot_v11_config.get_config()
+    log_cfg = cfg.get("logging") or {}
+    platform = cfg.get("platform_name", "onebot")
+    binding = OneBotBinding(event, sender_factory, account_id, platform, log_cfg)
+    options = _session_options(cfg)
 
-    if command["type"] == "deny":
-        ok, reason = update_whitelist_group(
-            platform=platform,
-            bot_id=bot_id,
-            group_id=str(group_id),
-            action="deny",
-            user_id=command.get("user"),
-        )
-        if ok:
-            return True, "已设置：忽略本群"
-        return True, f"设置失败: {reason}"
+    if _is_self_sent_message(event):
+        self_id = event.get("self_id") or event.get("user_id")
+        user_id = str(event.get("user_id") or self_id or "onebot_bot")
+        sender_info = event.get("sender") or {}
+        await pipeline.submit(InboundEvent(
+            kind="self_message",
+            conversation=_conversation(platform, {**event, "self_id": self_id}, account_id, user_id),
+            sender=Sender(id=user_id, name=sender_info.get("nickname") or sender_info.get("card") or "OneBot Bot"),
+            raw_content=event.get("raw_message") or event.get("message") or "",
+            raw_text=str(event.get("raw_message") or event.get("message") or ""),
+            binding=binding,
+            session_options=options,
+            platform_message_id=str(event["message_id"]) if event.get("message_id") is not None else None,
+            raw_event=event,
+        ))
+        return
 
-    if command["type"] == "probability":
-        value = command.get("value")
-        if value is None:
-            return True, "用法：/回复概率 0-100"
-        try:
-            value_int = int(value)
-        except Exception:
-            return True, "回复概率需为 0-100 的整数"
-        ok, reason = set_reply_probability(
-            platform=platform,
-            bot_id=bot_id,
-            group_id=str(group_id),
-            probability=value_int,
-        )
-        if ok:
-            return True, f"已设置：本群回复概率 {value_int}"
-        return True, f"设置失败: {reason}"
+    notice_type: Optional[str] = None
+    if post_type == "notice" and event.get("sub_type") == "poke":
+        # A poke is a notice; it reaches the conversation as a poke segment.
+        notice_type = "poke"
+        target_id = event.get("target_id")
+        event = {
+            **event,
+            "message_type": "group" if event.get("group_id") else "private",
+            "message": f"[CQ:poke,qq={target_id}]",
+        }
+        binding.event = event
+        logger.info(f"OneBot 收到戳一戳: target={target_id}")
+    elif post_type != "message":
+        _log_onebot_non_message(event)
+        return
 
-    if command["type"] == "probability_default":
-        value = command.get("value")
-        if value is None:
-            return True, "用法：/默认回复概率 0-100"
-        try:
-            value_int = int(value)
-        except Exception:
-            return True, "回复概率需为 0-100 的整数"
-        ok, reason = set_reply_probability(
-            platform=platform,
-            bot_id=bot_id,
-            group_id=None,
-            probability=value_int,
-        )
-        if ok:
-            return True, f"已设置：默认回复概率 {value_int}"
-        return True, f"设置失败: {reason}"
-
-    return False, ""
-
+    message = event.get("message")
+    if not isinstance(message, list):
+        message = event.get("raw_message") or message or ""
+    self_id = event.get("self_id")
+    sender = _sender_from_event(event)
+    await pipeline.submit(InboundEvent(
+        kind="notice" if notice_type else "message",
+        notice_type=notice_type,
+        conversation=_conversation(platform, event, account_id, sender.id),
+        sender=sender,
+        raw_content=message,
+        raw_text=str(event.get("raw_message") or message or ""),
+        binding=binding,
+        session_options=options,
+        platform_message_id=str(event["message_id"]) if event.get("message_id") is not None else None,
+        facts=PlatformFacts(
+            mentions_self=is_mentioned(event, message, self_id),
+            mentioned_ids=tuple(_extract_mentioned_ids(event, message)),
+            reply_to_platform_id=_extract_reply_platform_id(event) or _extract_reply_platform_id(message),
+        ),
+        raw_event=event,
+    ))
