@@ -88,7 +88,9 @@ def _ensure_access_token_in_file() -> Optional[str]:
         new_token = _generate_token()
         token_re = re.compile(r"^(\s*access_token:\s*)(\".*?\"|'.*?'|[^#\n]*)", re.MULTILINE)
         if token_re.search(content):
-            new_content = token_re.sub(rf"\\1\"{new_token}\"", content, count=1)
+            # A function replacement: a string like r"\1..." would be emitted literally
+            # (or misread as another group when the token starts with a digit).
+            new_content = token_re.sub(lambda match: f'{match.group(1)}"{new_token}"', content, count=1)
             with open(ONEBOT_V11_CONFIG_PATH, "w", encoding="utf-8") as f:
                 f.write(new_content)
             return new_token
