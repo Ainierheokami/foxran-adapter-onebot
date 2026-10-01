@@ -15,12 +15,11 @@ from app.adapters.control.pre_llm_commands import (
 )
 import app.api.core as api_core
 from app.tasks.core.session_processor import SessionProcessor
-from app.context.context_manager import SessionContext
+from app.context.context_manager import Message, SessionContext
 from app.data_mappers import get_message_processor
 from app.adapters.control.policy import platform_policy
 from app.adapters.message_protocol import (
     bind_platform_id,
-    make_platform_context_message,
     make_user_message,
     resolve_message_id_from_platform,
 )
@@ -765,15 +764,21 @@ def _bind_self_sent_platform_message_id(
     bot_name: str,
     bot_user_id: str,
 ) -> None:
-    raw_text = str(raw_message or "")
+    """Attach the platform id of a ``message_sent`` echo to the assistant message it came from.
+
+    History stores segments (core-refactor R2), so the echo is decoded and
+    compared by its text, which survives the platform rewriting media URLs.
+    """
+    echo = _decode_onebot_message(platform, raw_message)
+    echo_text = echo.plain_text().strip()
 
     for msg in reversed(session_ctx.history):
         if getattr(msg, "role", None) != "assistant":
             continue
         if getattr(msg, "platform_message_id", None):
             continue
-        content = str(getattr(msg, "content", "") or "")
-        if raw_text and content and (raw_text == content or raw_text in content or content in raw_text):
+        sent_text = msg.segments.plain_text().strip()
+        if echo_text and sent_text and (echo_text == sent_text or echo_text in sent_text or sent_text in echo_text):
             session_ctx.set_platform_id_for_message(msg.message_id, message_id)
             logger.debug(
                 "已通过 OneBot message_sent 回显绑定 assistant 消息平台 ID: message=%s platform=%s",
@@ -782,21 +787,28 @@ def _bind_self_sent_platform_message_id(
             )
             return
 
-    if raw_text:
-        message = make_platform_context_message(
+    if not echo.is_empty():
+        message = Message(
             role="assistant",
-            content=raw_text,
+            segments=echo,
             platform=platform,
-            platform_id=message_id,
+            platform_message_id=str(message_id),
             metadata={
                 "part_type": "send",
                 "status": "completed",
             },
+            user_id=bot_user_id,
+            user_name=bot_name,
+            raw_content=str(raw_message),
         )
-        message.user_id = bot_user_id
-        message.user_name = bot_name
-        message.raw_content = raw_message
         session_ctx.add_history_message(message=message)
+
+
+def _decode_onebot_message(platform: str, raw_message: Any) -> MessageChain:
+    try:
+        return get_message_processor().platform_registry.get_adapter(platform).from_platform_format(raw_message)
+    except Exception:
+        return MessageChain([str(raw_message)] if raw_message else [])
 
 
 def _log_onebot_message(
