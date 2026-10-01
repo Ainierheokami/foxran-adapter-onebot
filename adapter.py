@@ -70,7 +70,7 @@ class OneBotAdapter(BasePlatformAdapter):
         """动态向模型提供仅属于该适配器平台的特权环境信息"""
         conversation = getattr(session_ctx, "conversation", None)
         is_group = bool(conversation and conversation.is_group)
-        self_role = session_ctx.session_notes.get("self_role", "member")
+        self_role = session_ctx.platform_state.get("self_role", "member")
         has_power = is_group and self_role in ("owner", "admin")
         
         prompts = (
@@ -92,7 +92,7 @@ class OneBotAdapter(BasePlatformAdapter):
         """动态返回当前会话下可用的平台专属特权工具名称列表"""
         conversation = getattr(session_ctx, "conversation", None)
         is_group = bool(conversation and conversation.is_group)
-        self_role = session_ctx.session_notes.get("self_role", "member")
+        self_role = session_ctx.platform_state.get("self_role", "member")
         has_power = is_group and self_role in ("owner", "admin")
 
         tool_names = ["poke", "read_forward_msg"]

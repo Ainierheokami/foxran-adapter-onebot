@@ -8,7 +8,7 @@ import time
 
 from app.logger import setup_logger
 from app.adapters.onebot_v11.config import onebot_v11_config
-from app.context.context_manager import SessionContext
+from app.conversation.session import ConversationSession
 from app.inbound import ConversationRef, InboundEvent, PlatformFacts, Sender, SessionIdOptions
 from app.inbound import pipeline
 from app.adapters.onebot_v11.store.action_tracker import onebot_action_tracker
@@ -167,7 +167,7 @@ def _extract_reply_platform_id(value: Any) -> Optional[str]:
 
 
 async def _fetch_and_cache_self_role(
-    session_ctx: SessionContext,
+    session_ctx: ConversationSession,
     message_type: str,
     group_id: Optional[int],
     self_id: Optional[int],
@@ -192,30 +192,30 @@ async def _fetch_and_cache_self_role(
         s_id = int(self_id)
     except (ValueError, TypeError) as e:
         logger.error(f"解析 group_id ({group_id}) 或 self_id ({self_id}) 失败，安全退避为 member: {e}")
-        session_ctx.session_notes["self_role"] = "member"
+        session_ctx.platform_state["self_role"] = "member"
         return
 
     cache_key = (g_id, s_id)
     now = time.time()
 
     event_role = normalize_group_role(
-        (session_ctx.session_notes.get("onebot_last_self_sent") or {}).get("sender_role")
+        (session_ctx.platform_state.get("onebot_last_self_sent") or {}).get("sender_role")
     )
     if event_role:
         remember_bot_role(_BOT_GROUP_ROLE_CACHE, g_id, s_id, event_role, source="session_note")
-        session_ctx.session_notes["self_role"] = event_role
+        session_ctx.platform_state["self_role"] = event_role
         return
 
     # 1. 尝试首轮从全局缓存快速读取 (Lock-Free Fast Path)
     cached_role = get_cached_bot_role(_BOT_GROUP_ROLE_CACHE, g_id, s_id, ttl=_BOT_GROUP_ROLE_TTL)
     if cached_role:
-        session_ctx.session_notes["self_role"] = cached_role
+        session_ctx.platform_state["self_role"] = cached_role
         return
     if cache_key in _BOT_GROUP_ROLE_CACHE:
         role, ts = _BOT_GROUP_ROLE_CACHE[cache_key]
         if role == "unknown" and (now - ts < _BOT_GROUP_ROLE_COOLDOWN):
             # 处于失败退避冷却期内，直接安全降级为 member，不发任何网络请求
-            session_ctx.session_notes["self_role"] = "member"
+            session_ctx.platform_state["self_role"] = "member"
             return
 
     # 2. 动态初始化该群专属的并发协程排队锁
@@ -229,12 +229,12 @@ async def _fetch_and_cache_self_role(
         # 4. 二次检查缓存 (Double-Checked Locking)
         cached_role = get_cached_bot_role(_BOT_GROUP_ROLE_CACHE, g_id, s_id, ttl=_BOT_GROUP_ROLE_TTL)
         if cached_role:
-            session_ctx.session_notes["self_role"] = cached_role
+            session_ctx.platform_state["self_role"] = cached_role
             return
         if cache_key in _BOT_GROUP_ROLE_CACHE:
             role, ts = _BOT_GROUP_ROLE_CACHE[cache_key]
             if role == "unknown" and (now - ts < _BOT_GROUP_ROLE_COOLDOWN):
-                session_ctx.session_notes["self_role"] = "member"
+                session_ctx.platform_state["self_role"] = "member"
                 return
 
         # 5. 执行物理网络 API 调用，外层包装 Try-Except 及严格 Timeout，确保极致健壮性
@@ -251,17 +251,17 @@ async def _fetch_and_cache_self_role(
             )
             if role_val:
                 remember_bot_role(_BOT_GROUP_ROLE_CACHE, g_id, s_id, role_val, source="api")
-                session_ctx.session_notes["self_role"] = role_val
+                session_ctx.platform_state["self_role"] = role_val
                 logger.info(f"已通过 OneBot API 获取并全局缓存 Bot({s_id}) 在群({g_id}) 的权限: {role_val}")
             else:
                 # 记录失败状态，触发 Cooldown，并安全 fallback 到 member
                 _BOT_GROUP_ROLE_CACHE[cache_key] = ("unknown", time.time())
-                session_ctx.session_notes["self_role"] = "member"
+                session_ctx.platform_state["self_role"] = "member"
                 logger.warning(f"获取 Bot({s_id}) 自身群({g_id}) 权限所有接口均无有效响应，已进入 60s 重试冷却退避。")
         except Exception as e:
             # 无论网络抖动、超时或 OneBot 崩塌，统一在此处捕获，写入 unknown 冷却状态，fallback 保障系统平稳运行
             _BOT_GROUP_ROLE_CACHE[cache_key] = ("unknown", time.time())
-            session_ctx.session_notes["self_role"] = "member"
+            session_ctx.platform_state["self_role"] = "member"
             logger.error(f"获取 Bot({s_id}) 自身群({g_id}) 权限发生异常: {e}，已进入 60s 重试冷却退避。")
 
 
@@ -310,14 +310,14 @@ class OneBotBinding:
         self.platform = platform
         self.log_cfg = log_cfg
 
-    async def before_agent(self, session_ctx: SessionContext) -> None:
+    async def before_agent(self, session_ctx: ConversationSession) -> None:
         event = self.event
         await _fetch_and_cache_self_role(
-            session_ctx, event.get("message_type"), event.get("group_id"), event.get("self_id"), session_ctx.websocket
+            session_ctx, event.get("message_type"), event.get("group_id"), event.get("self_id"), session_ctx.sender
         )
 
-    async def fetch_message(self, session_ctx: SessionContext, platform_message_id: str) -> Any:
-        sender = session_ctx.websocket
+    async def fetch_message(self, session_ctx: ConversationSession, platform_message_id: str) -> Any:
+        sender = session_ctx.sender
         if not sender:
             return None
         params: Dict[str, Any] = (
@@ -352,12 +352,12 @@ class OneBotBinding:
         if self.log_cfg.get("debug_full_event", True):
             logger.debug(f"OneBot 事件完整内容: {json.dumps(event, ensure_ascii=False)}")
 
-    def on_self_message(self, session_ctx: SessionContext) -> None:
+    def on_self_message(self, session_ctx: ConversationSession) -> None:
         event = self.event
         role = _cache_bot_group_role_from_event(event)
         if role:
-            session_ctx.session_notes["self_role"] = role
-            session_ctx.session_notes["onebot_last_self_sent"] = {
+            session_ctx.platform_state["self_role"] = role
+            session_ctx.platform_state["onebot_last_self_sent"] = {
                 "group_id": event.get("group_id"),
                 "self_id": event.get("self_id"),
                 "sender_role": role,

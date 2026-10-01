@@ -7,7 +7,7 @@ from app.adapters.onebot_v11.config import onebot_v11_config
 from app.adapters.onebot_v11.handlers import handle_onebot_event
 from app.adapters.onebot_v11.network.senders import parse_onebot_echo
 from app.adapters.onebot_v11.store.action_tracker import onebot_action_tracker
-from app.api.core import active_sessions
+from app.conversation.session import conversations
 
 
 logger = setup_logger(__name__)
@@ -118,7 +118,7 @@ async def _onebot_v11_reverse_ws(websocket: WebSocket, account_id: str):
                 if isinstance(data_block, dict):
                     platform_message_id = data_block.get("message_id")
                 if session_id and outgoing_message_id and platform_message_id is not None:
-                    session_ctx = active_sessions.get(session_id)
+                    session_ctx = conversations.get(session_id)
                     if session_ctx:
                         session_ctx.log.record_platform_id(outgoing_message_id, platform_message_id)
 

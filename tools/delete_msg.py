@@ -72,7 +72,7 @@ class DeleteMsgTool(BaseTool):
                 permitted, reason = await verify_punish_permission(
                     int(msg_group_id), int(target_user_id), int(self_id), 
                     onebot_action_tracker, sender,
-                    bot_role_hint=session_ctx.session_notes.get("self_role")
+                    bot_role_hint=session_ctx.platform_state.get("self_role")
                 )
                 if not permitted:
                     return ToolResult(self.name, False, error=f"撤回失败（权限不足以撤回此成员的消息）：{reason}")

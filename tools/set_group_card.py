@@ -51,7 +51,7 @@ class SetGroupCardTool(BaseTool):
                 permitted, reason = await verify_punish_permission(
                     int(group_id), int(user_id), int(self_id), 
                     onebot_action_tracker, sender,
-                    bot_role_hint=session_ctx.session_notes.get("self_role")
+                    bot_role_hint=session_ctx.platform_state.get("self_role")
                 )
                 if not permitted:
                     return ToolResult(self.name, False, error=f"修改名片失败：{reason}")
