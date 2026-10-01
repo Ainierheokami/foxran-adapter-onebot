@@ -38,8 +38,10 @@ async def test_poke_tool_execute_success_has_no_verbose_message():
     from unittest.mock import AsyncMock, patch
 
     tool = PokeTool()
+    from app.inbound import ConversationRef
+
     session_ctx = SimpleNamespace(
-        session_notes={"onebot_target": {"group_id": "123456"}},
+        conversation=ConversationRef(platform="onebot", scope="group", id="123456", self_id="10000"),
         websocket=object(),
     )
     with patch("app.adapters.onebot_v11.store.action_tracker.onebot_action_tracker.request", new_callable=AsyncMock) as mock_req:

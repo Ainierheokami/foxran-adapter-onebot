@@ -301,32 +301,14 @@ class OneBotBinding:
     def __init__(
         self,
         event: Dict[str, Any],
-        sender_factory: Callable[[SessionContext], Any],
         account_id: str,
         platform: str,
         log_cfg: Dict[str, Any],
     ) -> None:
         self.event = event
-        self.sender_factory = sender_factory
         self.account_id = account_id
         self.platform = platform
         self.log_cfg = log_cfg
-
-    def _target(self, sender_role: Optional[str] = None) -> Dict[str, Any]:
-        event = self.event
-        return {
-            "message_type": event.get("message_type"),
-            "user_id": str(event.get("user_id") or "onebot_user"),
-            "group_id": event.get("group_id"),
-            "self_id": event.get("self_id"),
-            "sender_role": sender_role or (event.get("sender") or {}).get("role", "member"),
-        }
-
-    def bind_session(self, session_ctx: SessionContext) -> None:
-        # REMOVE-IN: R3b — replies get addressed by ConversationRef instead of session notes.
-        session_ctx.session_notes["onebot_target"] = self._target()
-        session_ctx.session_notes["onebot_account_id"] = self.account_id
-        session_ctx.set_websocket(self.sender_factory(session_ctx))
 
     async def before_agent(self, session_ctx: SessionContext) -> None:
         event = self.event
@@ -383,12 +365,6 @@ class OneBotBinding:
                 "time": event.get("time"),
             }
             logger.info(f"已从 Bot 自身消息回显缓存 Bot({event.get('self_id')}) 在群({event.get('group_id')}) 的权限: {role}")
-        target = self._target(sender_role=role)
-        target["user_id"] = str(event.get("user_id") or event.get("self_id") or "onebot_bot")
-        target["self_id"] = event.get("self_id") or event.get("user_id")
-        session_ctx.session_notes["onebot_target"] = target
-        session_ctx.session_notes["onebot_account_id"] = self.account_id
-        session_ctx.set_websocket(self.sender_factory(session_ctx))
         if self.log_cfg.get("log_message", True):
             logger.info(
                 "OneBot 收到 Bot 自身消息回显 [群:%s][Bot:%s][role:%s] message_id=%s: %s",
@@ -433,17 +409,13 @@ def _conversation(platform: str, event: Dict[str, Any], account_id: str, user_id
     )
 
 
-async def handle_onebot_event(
-    event: Dict[str, Any],
-    sender_factory: Callable[[SessionContext], Any],
-    account_id: str = "default",
-) -> None:
+async def handle_onebot_event(event: Dict[str, Any], account_id: str = "default") -> None:
     """Decode one OneBot v11 event and hand it to the framework pipeline."""
     post_type = (event.get("post_type") or "message").lower()
     cfg = onebot_v11_config.get_account(account_id) or onebot_v11_config.get_config()
     log_cfg = cfg.get("logging") or {}
     platform = cfg.get("platform_name", "onebot")
-    binding = OneBotBinding(event, sender_factory, account_id, platform, log_cfg)
+    binding = OneBotBinding(event, account_id, platform, log_cfg)
     options = _session_options(cfg)
 
     if _is_self_sent_message(event):

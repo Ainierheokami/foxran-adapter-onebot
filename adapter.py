@@ -68,8 +68,8 @@ class OneBotAdapter(BasePlatformAdapter):
 
     def get_platform_prompts(self, session_ctx: Any) -> str:
         """动态向模型提供仅属于该适配器平台的特权环境信息"""
-        target = session_ctx.session_notes.get("onebot_target", {})
-        is_group = target.get("message_type") == "group"
+        conversation = getattr(session_ctx, "conversation", None)
+        is_group = bool(conversation and conversation.is_group)
         self_role = session_ctx.session_notes.get("self_role", "member")
         has_power = is_group and self_role in ("owner", "admin")
         
@@ -90,8 +90,8 @@ class OneBotAdapter(BasePlatformAdapter):
 
     def get_platform_tools(self, session_ctx: Any) -> list[str]:
         """动态返回当前会话下可用的平台专属特权工具名称列表"""
-        target = session_ctx.session_notes.get("onebot_target", {})
-        is_group = target.get("message_type") == "group"
+        conversation = getattr(session_ctx, "conversation", None)
+        is_group = bool(conversation and conversation.is_group)
         self_role = session_ctx.session_notes.get("self_role", "member")
         has_power = is_group and self_role in ("owner", "admin")
 

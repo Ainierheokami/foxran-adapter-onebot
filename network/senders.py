@@ -7,10 +7,9 @@ import re
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from starlette.websockets import WebSocket, WebSocketState
+from starlette.websockets import WebSocketState
 
 from app.logger import setup_logger
-from app.utils.metrics_manager import metrics
 
 
 logger = setup_logger(__name__)
@@ -48,196 +47,89 @@ def _file_name_from_source(source: str) -> str:
     return "attachment"
 
 
-class OneBotReplySenderBase:
-    def __init__(self, session_ctx):
-        self._session_ctx = session_ctx
+class OneBotOutboundPort:
+    """Foxran outbound port for OneBot v11 (core-refactor R3b).
 
-    @property
-    def client_state(self) -> WebSocketState:
-        return WebSocketState.CONNECTED
+    The transport is picked when sending: the account's forward client if it is
+    connected, otherwise the account's latest reverse WebSocket. Echo isolation
+    and outbound metrics are handled by the framework's ConversationSender.
+    """
 
-    async def send_json(self, data: Dict[str, Any]):
-        if not isinstance(data, dict):
-            return
+    def _transport(self, account_id: str):
+        from app.adapters.onebot_v11.network.client import onebot_v11_client
+        from app.adapters.onebot_v11.network.reverse_ws import reverse_socket_for
 
-        reply = data.get("reply")
-        if reply is None and data.get("type") == "assistant_message":
-            reply = data.get("content") or (data.get("message") or {}).get("content")
-        if reply is None:
-            return
-        reply = self._replace_reply_id(str(reply))
-        message_id = data.get("message_id") or data.get("id") or (data.get("message") or {}).get("message_id")
-        echo = _build_echo(self._session_ctx.session_id, message_id) if message_id else None
+        client = onebot_v11_client.client_for(account_id)
+        if client is not None and client.is_connected:
+            return client.send_action
+        websocket = reverse_socket_for(account_id)
+        if websocket is not None and websocket.client_state == WebSocketState.CONNECTED:
+            async def send_reverse(action: str, params: Dict[str, Any], echo: Optional[str] = None) -> bool:
+                await websocket.send_json({"action": action, "params": params, "echo": echo or str(uuid.uuid4())})
+                return True
+            return send_reverse
+        return None
 
-        target = self._session_ctx.session_notes.get("onebot_target", {})
-        message_type = target.get("message_type")
-        group_id = target.get("group_id")
-        user_id = target.get("user_id")
-
-        rec_id = None
+    async def send_action(self, account_id: str, action: str, params: Dict[str, Any], echo: Optional[str] = None) -> bool:
+        transport = self._transport(account_id)
+        if transport is None:
+            logger.warning(f"OneBot 动作发送失败（账号 {account_id} 未连接）: {action}")
+            return False
         try:
-            from app.adapters.outbound_tracker import get_outbound_tracker
-            rec_id = get_outbound_tracker().register_outbound(
-                str(reply), platform="onebot", group_id=group_id
-            )
-        except Exception:
-            pass
+            return bool(await transport(action, params, echo=echo))
+        except Exception as e:
+            logger.warning(f"OneBot 动作发送失败: {action}, 错误: {e}")
+            return False
 
-        if message_type == "group" and group_id:
-            try:
-                await self._send_reply_parts(
-                    reply,
-                    message_action="send_group_msg",
-                    message_target={"group_id": _coerce_int(group_id)},
-                    upload_action="upload_group_file",
-                    upload_target={"group_id": _coerce_int(group_id)},
-                    echo=echo,
-                )
-                if rec_id:
-                    try:
-                        from app.adapters.outbound_tracker import get_outbound_tracker
-                        get_outbound_tracker().mark_outbound_sent(rec_id)
-                    except Exception:
-                        pass
-                self._track_outbound_reply(reply)
-                return
-            except Exception:
-                if rec_id:
-                    try:
-                        from app.adapters.outbound_tracker import get_outbound_tracker
-                        get_outbound_tracker().mark_outbound_failed(rec_id)
-                    except Exception:
-                        pass
-                raise
+    def prepare(self, session_ctx: Any, reply: str) -> str:
+        """Replace internal reply ids with platform message ids."""
+        def repl(match: re.Match) -> str:
+            platform_id = session_ctx.resolve_platform_id(match.group(1))
+            return f"[CQ:reply,id={platform_id}" if platform_id else match.group(0)
 
-        if user_id:
-            try:
-                await self._send_reply_parts(
-                    reply,
-                    message_action="send_private_msg",
-                    message_target={"user_id": _coerce_int(user_id)},
-                    upload_action="upload_private_file",
-                    upload_target={"user_id": _coerce_int(user_id)},
-                    echo=echo,
-                )
-                if rec_id:
-                    try:
-                        from app.adapters.outbound_tracker import get_outbound_tracker
-                        get_outbound_tracker().mark_outbound_sent(rec_id)
-                    except Exception:
-                        pass
-                self._track_outbound_reply(reply)
-                return
-            except Exception:
-                if rec_id:
-                    try:
-                        from app.adapters.outbound_tracker import get_outbound_tracker
-                        get_outbound_tracker().mark_outbound_failed(rec_id)
-                    except Exception:
-                        pass
-                raise
+        return re.sub(r"\[CQ:reply,id=([^\],]+)", repl, reply)
 
-        logger.warning("OneBot 回复丢弃：缺少目标信息")
+    async def deliver(self, session_ctx: Any, conversation: Any, reply: str, message_id: Optional[str]) -> None:
+        echo = _build_echo(session_ctx.session_id, message_id) if message_id else None
+        account_id = conversation.account_id
+        if conversation.is_group:
+            target = {"group_id": _coerce_int(conversation.id)}
+            message_action, upload_action = "send_group_msg", "upload_group_file"
+        else:
+            target = {"user_id": _coerce_int(conversation.id)}
+            message_action, upload_action = "send_private_msg", "upload_private_file"
 
-    async def _send_reply_parts(
-        self,
-        reply: str,
-        *,
-        message_action: str,
-        message_target: Dict[str, Any],
-        upload_action: str,
-        upload_target: Dict[str, Any],
-        echo: Optional[str],
-    ) -> None:
-        """Send regular message content and file uploads through their proper APIs."""
-        cursor = 0
         action_index = 0
 
         async def send(action: str, params: Dict[str, Any]) -> None:
             nonlocal action_index
             action_echo = echo if action_index == 0 else None
             action_index += 1
-            await self._send_action(action, params, action_echo)
+            await self.send_action(account_id, action, params, echo=action_echo)
 
+        # Regular content and file uploads go through their own APIs.
+        cursor = 0
         for match in _CQ_FILE_PATTERN.finditer(reply):
             message_part = reply[cursor:match.start()]
             if message_part.strip():
-                await send(message_action, {**message_target, "message": message_part})
-
+                await send(message_action, {**target, "message": message_part})
             file_params = _parse_cq_params(match.group("params"))
             source = file_params.get("file") or file_params.get("url")
             if source:
                 name = file_params.get("name") or _file_name_from_source(source)
-                await send(upload_action, {**upload_target, "file": source, "name": name})
+                await send(upload_action, {**target, "file": source, "name": name})
             else:
                 logger.warning("OneBot 文件发送已跳过：CQ:file 缺少 file/url 参数")
             cursor = match.end()
 
         trailing = reply[cursor:]
         if trailing.strip():
-            await send(message_action, {**message_target, "message": trailing})
+            await send(message_action, {**target, "message": trailing})
         elif action_index == 0 and reply.strip():
-            await send(message_action, {**message_target, "message": reply})
-
-    async def _send_action(self, action: str, params: Dict[str, Any], echo: Optional[str] = None):
-        raise NotImplementedError
-
-    async def send_action(self, action: str, params: Dict[str, Any], echo: Optional[str] = None) -> bool:
-        try:
-            await self._send_action(action, params, echo=echo)
-            return True
-        except Exception as e:
-            logger.warning(f"OneBot 动作发送失败: {action}, 错误: {e}")
-            return False
-
-    def _track_outbound_reply(self, reply: str) -> None:
-        adapter_name = self._session_ctx.platform or "onebot"
-        metrics.track_adapter_message(
-            adapter_name,
-            "out",
-            self._session_ctx.session_id,
-            reply[:1000] if isinstance(reply, str) else str(reply)[:1000],
-        )
-
-    def _replace_reply_id(self, text: str) -> str:
-        import re
-        pattern = r"\[CQ:reply,id=([^\],]+)"
-        def repl(match: re.Match) -> str:
-            message_id = match.group(1)
-            platform_id = self._session_ctx.resolve_platform_id(message_id)
-            if platform_id:
-                return f"[CQ:reply,id={platform_id}"
-            return match.group(0)
-        return re.sub(pattern, repl, text)
+            await send(message_action, {**target, "message": reply})
 
 
-class ForwardOneBotReplySender(OneBotReplySenderBase):
-    def __init__(self, client, session_ctx):
-        super().__init__(session_ctx)
-        self._client = client
-
-    @property
-    def client_state(self) -> WebSocketState:
-        return WebSocketState.CONNECTED
-
-    async def _send_action(self, action: str, params: Dict[str, Any], echo: Optional[str] = None):
-        await self._client.send_action(action, params, echo=echo)
-
-
-class ReverseOneBotReplySender(OneBotReplySenderBase):
-    def __init__(self, websocket: WebSocket, session_ctx):
-        super().__init__(session_ctx)
-        self._websocket = websocket
-
-    @property
-    def client_state(self) -> WebSocketState:
-        return self._websocket.client_state
-
-    async def _send_action(self, action: str, params: Dict[str, Any], echo: Optional[str] = None):
-        if self._websocket.client_state != WebSocketState.CONNECTED:
-            return
-        payload = {"action": action, "params": params, "echo": echo or str(uuid.uuid4())}
-        await self._websocket.send_json(payload)
+onebot_outbound_port = OneBotOutboundPort()
 
 
 def _build_echo(session_id: str, message_id: str) -> str:

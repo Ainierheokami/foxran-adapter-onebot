@@ -51,8 +51,26 @@ def _sync_echo_isolation():
             )
 
 
+def _register_outbound_ports() -> None:
+    from app.outbound import outbound_ports
+    try:
+        from .config import onebot_v11_config
+        from .network.senders import onebot_outbound_port
+    except (ImportError, ValueError):
+        from config import onebot_v11_config
+        from network.senders import onebot_outbound_port
+    platforms = {"onebot"}
+    try:
+        platforms.update(str(account.get("platform_name") or "onebot") for account in onebot_v11_config.get_accounts())
+    except Exception:
+        pass
+    for platform in platforms:
+        outbound_ports.register(platform, onebot_outbound_port, owner=__name__)
+
+
 def register_adapter(registry):
     """注册 OneBot 适配器到平台注册表"""
+    _register_outbound_ports()
     onebot_adapter = OneBotAdapter()
     registry.register_adapter('onebot', onebot_adapter)
     registry.register_adapter('qq', onebot_adapter)  # QQ平台使用OneBot

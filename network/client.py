@@ -12,7 +12,7 @@ import websockets
 from app.logger import setup_logger
 from app.adapters.onebot_v11.config import onebot_v11_config
 from app.adapters.onebot_v11.handlers import handle_onebot_event
-from app.adapters.onebot_v11.network.senders import ForwardOneBotReplySender, parse_onebot_echo
+from app.adapters.onebot_v11.network.senders import parse_onebot_echo
 from app.adapters.onebot_v11.store.action_tracker import onebot_action_tracker
 from app.api.core import active_sessions
 from app.utils.metrics_manager import metrics
@@ -49,6 +49,10 @@ class OneBotV11WsClient:
         self._run_task = asyncio.create_task(self._run_loop())
         logger.info("OneBot v11 WS 客户端启动中：account=%s", self.account_id)
         return True
+
+    @property
+    def is_connected(self) -> bool:
+        return bool(self._connected and self._ws)
 
     async def stop(self):
         self._stop_event.set()
@@ -166,11 +170,7 @@ class OneBotV11WsClient:
             return
 
         if "post_type" in data:
-            await handle_onebot_event(
-                data,
-                sender_factory=lambda ctx: ForwardOneBotReplySender(self, ctx),
-                account_id=self.account_id,
-            )
+            await handle_onebot_event(data, account_id=self.account_id)
             return
 
         if "status" in data and "echo" in data:
@@ -224,6 +224,9 @@ class OneBotV11ClientManager:
             client = self._clients.setdefault(account_id, OneBotV11WsClient(account_id))
             started = await client.start() or started
         return started
+
+    def client_for(self, account_id: str) -> Optional[OneBotV11WsClient]:
+        return self._clients.get(account_id)
 
     async def stop(self) -> None:
         for client in list(self._clients.values()):

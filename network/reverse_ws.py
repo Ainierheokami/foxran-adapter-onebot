@@ -5,7 +5,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.logger import setup_logger
 from app.adapters.onebot_v11.config import onebot_v11_config
 from app.adapters.onebot_v11.handlers import handle_onebot_event
-from app.adapters.onebot_v11.network.senders import ReverseOneBotReplySender, parse_onebot_echo
+from app.adapters.onebot_v11.network.senders import parse_onebot_echo
 from app.adapters.onebot_v11.store.action_tracker import onebot_action_tracker
 from app.api.core import active_sessions
 
@@ -13,6 +13,12 @@ from app.api.core import active_sessions
 logger = setup_logger(__name__)
 router = APIRouter()
 _reverse_connections: dict[str, int] = {}
+# Latest live reverse connection per account; replies go out through it.
+_reverse_sockets: dict[str, WebSocket] = {}
+
+
+def reverse_socket_for(account_id: str) -> WebSocket | None:
+    return _reverse_sockets.get(account_id)
 
 
 def reverse_connection_status() -> dict[str, int]:
@@ -83,8 +89,7 @@ async def _onebot_v11_reverse_ws(websocket: WebSocket, account_id: str):
 
     logger.info("OneBot v11 反向 WS 已连接：account=%s", account_id)
     _reverse_connections[account_id] = _reverse_connections.get(account_id, 0) + 1
-
-    sender_factory = lambda ctx: ReverseOneBotReplySender(websocket, ctx)
+    _reverse_sockets[account_id] = websocket
 
     try:
         while True:
@@ -101,7 +106,7 @@ async def _onebot_v11_reverse_ws(websocket: WebSocket, account_id: str):
                 continue
 
             if "post_type" in data:
-                await handle_onebot_event(data, sender_factory=sender_factory, account_id=account_id)
+                await handle_onebot_event(data, account_id=account_id)
                 continue
 
             if "status" in data and "echo" in data:
@@ -118,6 +123,8 @@ async def _onebot_v11_reverse_ws(websocket: WebSocket, account_id: str):
                         session_ctx.set_platform_id_for_message(outgoing_message_id, platform_message_id)
 
     finally:
+        if _reverse_sockets.get(account_id) is websocket:
+            _reverse_sockets.pop(account_id, None)
         remaining = _reverse_connections.get(account_id, 1) - 1
         if remaining > 0:
             _reverse_connections[account_id] = remaining

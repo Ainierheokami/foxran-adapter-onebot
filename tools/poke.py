@@ -27,8 +27,8 @@ class PokeTool(BaseTool):
         if not session_ctx:
             return ToolResult(self.name, False, error="缺少会话上下文，无法执行操作。")
             
-        target_info = session_ctx.session_notes.get("onebot_target", {})
-        group_id = target_info.get("group_id")
+        conversation = getattr(session_ctx, "conversation", None)
+        group_id = conversation.group_id if conversation else None
         
         if not group_id:
             return ToolResult(self.name, False, error="当前操作仅支持在群聊中戳一戳。")
