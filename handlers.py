@@ -310,6 +310,9 @@ class OneBotBinding:
         self.platform = platform
         self.log_cfg = log_cfg
 
+    def on_conversation(self, session_ctx: ConversationSession) -> None:
+        pass
+
     async def before_agent(self, session_ctx: ConversationSession) -> None:
         event = self.event
         await _fetch_and_cache_self_role(

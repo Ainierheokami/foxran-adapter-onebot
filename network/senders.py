@@ -1,21 +1,19 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import json
-import re
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from starlette.websockets import WebSocketState
 
 from app.logger import setup_logger
+from app.message import ExtensionSegment, File, MessageChain, Reply, Segment, segment_registry
+from app.outbound import OutboundMessage
 
 
 logger = setup_logger(__name__)
-
-
-_CQ_FILE_PATTERN = re.compile(r"\[CQ:file,(?P<params>[^\]]+)\]")
 
 
 def _coerce_int(value: Any) -> Any:
@@ -23,16 +21,6 @@ def _coerce_int(value: Any) -> Any:
         return int(value)
     except Exception:
         return value
-
-
-def _parse_cq_params(params_str: str) -> Dict[str, str]:
-    params: Dict[str, str] = {}
-    for part in params_str.split(","):
-        if "=" not in part:
-            continue
-        key, value = part.split("=", 1)
-        params[key.strip()] = value.strip()
-    return params
 
 
 def _file_name_from_source(source: str) -> str:
@@ -81,15 +69,32 @@ class OneBotOutboundPort:
             logger.warning(f"OneBot 动作发送失败: {action}, 错误: {e}")
             return False
 
-    def prepare(self, session_ctx: Any, reply: str) -> str:
-        """Replace internal reply ids with platform message ids."""
-        def repl(match: re.Match) -> str:
-            platform_id = session_ctx.log.platform_id_of(match.group(1))
-            return f"[CQ:reply,id={platform_id}" if platform_id else match.group(0)
+    def encode(self, session_ctx: Any, segments: MessageChain) -> OutboundMessage:
+        """CQ text per message part; files become their own upload actions."""
+        from app.adapters.onebot_v11.adapter import OneBotAdapter
 
-        return re.sub(r"\[CQ:reply,id=([^\],]+)", repl, reply)
+        adapter = OneBotAdapter()
+        parts: List[Tuple[str, Any]] = []
+        run: List[Segment] = []
 
-    async def deliver(self, session_ctx: Any, conversation: Any, reply: str, message_id: Optional[str]) -> None:
+        def flush() -> None:
+            if run:
+                parts.append(("message", adapter.to_platform_format(MessageChain(list(run)))))
+                run.clear()
+
+        for seg in _flatten(segments):
+            if isinstance(seg, Reply):
+                seg = _with_platform_reply_id(session_ctx, seg)
+            if isinstance(seg, File):
+                flush()
+                parts.append(("file", seg))
+            else:
+                run.append(seg)
+        flush()
+        text = "".join(adapter.to_platform_format(item) if kind == "file" else item for kind, item in parts)
+        return OutboundMessage(text=text, payload=parts)
+
+    async def deliver(self, session_ctx: Any, conversation: Any, message: OutboundMessage, message_id: Optional[str]) -> Optional[str]:
         echo = _build_echo(session_ctx.session_id, message_id) if message_id else None
         account_id = conversation.account_id
         if conversation.is_group:
@@ -107,26 +112,43 @@ class OneBotOutboundPort:
             action_index += 1
             await self.send_action(account_id, action, params, echo=action_echo)
 
-        # Regular content and file uploads go through their own APIs.
-        cursor = 0
-        for match in _CQ_FILE_PATTERN.finditer(reply):
-            message_part = reply[cursor:match.start()]
-            if message_part.strip():
-                await send(message_action, {**target, "message": message_part})
-            file_params = _parse_cq_params(match.group("params"))
-            source = file_params.get("file") or file_params.get("url")
+        # Regular content and file uploads go through their own APIs; the
+        # platform id arrives asynchronously with the action response (echo).
+        for kind, item in message.payload:
+            if kind == "message":
+                if item.strip():
+                    await send(message_action, {**target, "message": item})
+                continue
+            source = item.media.file or item.media.url
             if source:
-                name = file_params.get("name") or _file_name_from_source(source)
-                await send(upload_action, {**target, "file": source, "name": name})
+                await send(upload_action, {**target, "file": source, "name": item.name or _file_name_from_source(source)})
             else:
-                logger.warning("OneBot 文件发送已跳过：CQ:file 缺少 file/url 参数")
-            cursor = match.end()
+                logger.warning("OneBot 文件发送已跳过：文件片段缺少 file/url")
+        if action_index == 0 and message.text.strip():
+            await send(message_action, {**target, "message": message.text})
+        return None
 
-        trailing = reply[cursor:]
-        if trailing.strip():
-            await send(message_action, {**target, "message": trailing})
-        elif action_index == 0 and reply.strip():
-            await send(message_action, {**target, "message": reply})
+
+def _flatten(segments: MessageChain) -> List[Segment]:
+    result: List[Segment] = []
+    for seg in segments:
+        if isinstance(seg, ExtensionSegment):
+            result.extend(_flatten(MessageChain(segment_registry.fallback(seg))))
+        else:
+            result.append(seg)
+    return result
+
+
+def _with_platform_reply_id(session_ctx: Any, seg: Reply) -> Reply:
+    """Replies quote the platform id of the target message when it is known."""
+    ref = seg.ref
+    reply_id = ref.platform_message_id or (ref.message_id or "")
+    platform_id = session_ctx.log.platform_id_of(reply_id) if reply_id else None
+    if not platform_id:
+        return seg
+    seg = seg.model_copy(deep=True)
+    seg.ref.platform_message_id = platform_id
+    return seg
 
 
 onebot_outbound_port = OneBotOutboundPort()
