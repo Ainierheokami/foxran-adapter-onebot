@@ -313,6 +313,9 @@ class OneBotBinding:
     def on_conversation(self, session_ctx: ConversationSession) -> None:
         pass
 
+    async def on_command(self, session_ctx: ConversationSession, result: Any) -> None:
+        pass
+
     async def before_agent(self, session_ctx: ConversationSession) -> None:
         event = self.event
         await _fetch_and_cache_self_role(
