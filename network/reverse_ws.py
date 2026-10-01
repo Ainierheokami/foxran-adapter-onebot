@@ -120,7 +120,7 @@ async def _onebot_v11_reverse_ws(websocket: WebSocket, account_id: str):
                 if session_id and outgoing_message_id and platform_message_id is not None:
                     session_ctx = active_sessions.get(session_id)
                     if session_ctx:
-                        session_ctx.set_platform_id_for_message(outgoing_message_id, platform_message_id)
+                        session_ctx.log.record_platform_id(outgoing_message_id, platform_message_id)
 
     finally:
         if _reverse_sockets.get(account_id) is websocket:

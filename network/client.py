@@ -184,7 +184,7 @@ class OneBotV11WsClient:
             if session_id and outgoing_message_id and platform_message_id is not None:
                 session_ctx = active_sessions.get(session_id)
                 if session_ctx:
-                    session_ctx.set_platform_id_for_message(outgoing_message_id, platform_message_id)
+                    session_ctx.log.record_platform_id(outgoing_message_id, platform_message_id)
 
     def _build_ws_url(self, cfg: Dict[str, Any]) -> str:
         ws_url = cfg.get("ws_url") or ""

@@ -283,7 +283,7 @@ class OneBotAdapter(BasePlatformAdapter):
             internal_id = ref.message_id if ref.message_id is not None else (ref.platform_message_id or "")
             reply_id = ref.platform_message_id or internal_id
             if getattr(self, "session_ctx", None):
-                reply_id = self.session_ctx.resolve_platform_id(internal_id) or reply_id
+                reply_id = self.session_ctx.log.platform_id_of(internal_id) or reply_id
             return f"[CQ:reply,id={reply_id}]"
         if isinstance(seg, Voice):
             params = []

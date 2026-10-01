@@ -10,7 +10,7 @@ import app.api.core as api_core
 from app.tasks.core.session_processor import SessionProcessor
 from app.api.models.message_models import OneBotEvent
 from app.api.endpoints.auth import require_auth
-from app.adapters.message_protocol import bind_platform_id, make_user_message
+from app.adapters.message_protocol import make_user_message
 from app.adapters.onebot_v11.config import onebot_v11_config
 
 
@@ -164,7 +164,7 @@ async def onebot_v11_event(event: OneBotEvent, wait_for_reply: bool = False, tim
         platform_id=event.message_id,
         raw_content=content,
     )
-    bind_platform_id(session_ctx, current_message, event.message_id)
+    session_ctx.log.bind_platform_id(current_message.message_id, event.message_id)
     await session_ctx.handle_new_message(current_message)
 
     reply_text: Optional[str] = None

@@ -84,7 +84,7 @@ class OneBotOutboundPort:
     def prepare(self, session_ctx: Any, reply: str) -> str:
         """Replace internal reply ids with platform message ids."""
         def repl(match: re.Match) -> str:
-            platform_id = session_ctx.resolve_platform_id(match.group(1))
+            platform_id = session_ctx.log.platform_id_of(match.group(1))
             return f"[CQ:reply,id={platform_id}" if platform_id else match.group(0)
 
         return re.sub(r"\[CQ:reply,id=([^\],]+)", repl, reply)
