@@ -157,7 +157,7 @@ async def onebot_v11_event(event: OneBotEvent, wait_for_reply: bool = False, tim
         raise HTTPException(status_code=400, detail=f"入站消息处理失败: {e}")
 
     current_message = make_user_message(
-        content=processed.internal,
+        segments=processed.segments,
         user_id=user_id,
         user_name=user_name,
         platform=platform,

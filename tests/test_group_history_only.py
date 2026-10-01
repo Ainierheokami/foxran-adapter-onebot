@@ -7,6 +7,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import handlers as module
+from app.message import Image, MediaRef, MessageChain
 
 
 class _SessionContextStub:
@@ -30,11 +31,11 @@ class _SessionContextStub:
 class GroupHistoryOnlyTest(unittest.IsolatedAsyncioTestCase):
     async def test_non_triggering_group_image_is_recorded_without_starting_llm(self):
         image_url = "https://multimedia.nt.qq.com.cn/download?fileid=test-image"
+        segments = MessageChain([Image(media=MediaRef(url=image_url))])
         processed = SimpleNamespace(
             internal=f"[image,url={image_url}]",
-            compressed=f"[image,url={image_url}]",
+            segments=segments,
             original=f"[CQ:image,file=4411AB.jpg,url={image_url}]",
-            parts=[{"type": "image", "url": image_url}],
         )
 
         process_calls = []
@@ -77,8 +78,8 @@ class GroupHistoryOnlyTest(unittest.IsolatedAsyncioTestCase):
             await module.handle_onebot_event(event, sender_factory=lambda _session: object())
 
         self.assertEqual(
-            [message.content for message in session.history],
-            [processed.compressed],
+            [message.segments for message in session.history],
+            [segments],
         )
         self.assertEqual(session.broadcasts, session.history)
         self.assertEqual(session.handled, [])

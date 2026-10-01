@@ -33,6 +33,7 @@ from app.adapters.onebot_v11.store.role_store import (
     remember_bot_role,
 )
 from app.utils.metrics_manager import metrics
+from app.message import MessageChain, Reply, Text
 
 
 logger = setup_logger(__name__)
@@ -219,63 +220,6 @@ def _extract_reply_platform_id(value: Any) -> Optional[str]:
         if reply_id:
             return str(reply_id).strip()
     return None
-
-
-def _summarize_reply_target(target_msg: Any, limit: int = 120) -> str:
-    if not target_msg or not getattr(target_msg, "content", None):
-        return ""
-    text = re.sub(r"\s+", " ", str(target_msg.content)).strip()
-    text = text.replace("]", ")").replace(",", "，")
-    return text[:limit] + "..." if len(text) > limit else text
-
-
-def _enrich_reply_parts(parts: Any, session_ctx: SessionContext) -> list[Dict[str, Any]]:
-    if not isinstance(parts, list):
-        return parts or []
-
-    enriched: list[Dict[str, Any]] = []
-    for part in parts:
-        if not isinstance(part, dict):
-            enriched.append(part)
-            continue
-
-        next_part = dict(part)
-        if str(next_part.get("type") or "").lower() == "reply":
-            platform_id = (
-                next_part.get("platform_id")
-                or next_part.get("platform_message_id")
-            )
-            internal_id = (
-                next_part.get("message_id")
-                or next_part.get("internal_id")
-                or next_part.get("reply_to_message_id")
-            )
-
-            bare_id = next_part.get("id")
-            if bare_id is not None and not platform_id and not internal_id:
-                platform_id = bare_id
-
-            if platform_id is not None and not internal_id:
-                internal_id = session_ctx.resolve_message_id_from_platform(platform_id)
-            if internal_id and platform_id is None:
-                platform_id = session_ctx.resolve_platform_message_id(str(internal_id))
-
-            target_msg = session_ctx.get_message_by_id(str(internal_id)) if internal_id else None
-            if internal_id:
-                next_part["id"] = str(internal_id)
-                next_part["message_id"] = str(internal_id)
-                next_part["internal_id"] = str(internal_id)
-                next_part["reply_to_message_id"] = str(internal_id)
-            if platform_id is not None:
-                next_part["platform_id"] = str(platform_id)
-                next_part["platform_message_id"] = str(platform_id)
-            if not str(next_part.get("text") or "").strip():
-                snippet = _summarize_reply_target(target_msg)
-                if snippet:
-                    next_part["text"] = snippet
-
-        enriched.append(next_part)
-    return enriched
 
 
 async def _fetch_and_cache_self_role(
@@ -642,16 +586,15 @@ async def handle_onebot_event(
         media_materialized = True
     if not decision.should_reply:
         platform_id = event.get("message_id")
-        enriched_content = await _expand_reply_reference(processed.compressed, session_ctx)
+        enriched_segments = await _enrich_reply_segments(processed.segments, session_ctx)
         current_message = make_user_message(
-            content=enriched_content,
+            segments=enriched_segments,
             user_id=user_id,
             user_name=user_name,
             platform=platform,
             platform_id=platform_id,
             raw_content=processed.original,
             metadata={
-                "message_parts": _enrich_reply_parts(processed.parts, session_ctx),
                 "conversation_facts": _conversation_facts(
                     decision_reason=decision.reason,
                     message_type=message_type,
@@ -692,11 +635,10 @@ async def handle_onebot_event(
             logger.error(f"启动会话处理器失败: {e}")
             return
 
-    enriched_content = await _expand_reply_reference(processed.compressed, session_ctx)
+    enriched_segments = await _enrich_reply_segments(processed.segments, session_ctx)
     platform_id = event.get("message_id")
     proc = active_processors.get(session_ctx.session_id)
     metadata = {
-        "message_parts": _enrich_reply_parts(processed.parts, session_ctx),
         "conversation_facts": _conversation_facts(
             decision_reason=decision.reason,
             message_type=message_type,
@@ -713,7 +655,7 @@ async def handle_onebot_event(
             "interjection_reason": "agent_running",
         })
     current_message = make_user_message(
-        content=enriched_content,
+        segments=enriched_segments,
         user_id=user_id,
         user_name=user_name,
         platform=platform,
@@ -920,32 +862,21 @@ def _log_onebot_non_message(event: Dict[str, Any]) -> None:
         logger.debug(f"OneBot 通知完整内容: {json.dumps(event, ensure_ascii=False)}")
 
 
-async def _expand_reply_reference(content: str, session_ctx: SessionContext) -> str:
-    pattern = r"\[reply,(?P<params>[^\]]+)\]"
+_REPLY_PREVIEW_LIMIT = 120
+_REPLY_FETCH_FAILED = "[消息获取失败]"
 
-    def parse_params(params_str: str) -> Dict[str, str]:
-        params = {}
-        for part in params_str.split(","):
-            if "=" not in part:
-                continue
-            key, value = part.split("=", 1)
-            params[key.strip()] = value.strip()
-        return params
 
-    def extract_reply_id(params_str: str, parsed: Dict[str, str]) -> str:
-        reply_id = parsed.get("id", "")
-        if reply_id:
-            return reply_id
-        match = re.search(r"(?:^|,)\s*id=([^,]+)", params_str)
-        return match.group(1).strip() if match else ""
+def _sanitize_reply_preview(text: str) -> str:
+    # The preview is rendered inside a ``[reply,...]`` agent tag.
+    return text.replace("\n", " ").replace("]", ")").replace(",", "，")
 
-    def sanitize_text(text: str) -> str:
-        text = text.replace("\n", " ")
-        text = text.replace("]", ")")
-        text = text.replace(",", "，")
-        return text
 
-    async def fetch_snippet_from_platform(reply_id: str) -> Optional[str]:
+async def _enrich_reply_segments(segments: MessageChain, session_ctx: SessionContext) -> MessageChain:
+    """Resolve reply targets to internal/platform ids and attach a short preview of the quoted message."""
+    if not any(isinstance(seg, Reply) for seg in segments):
+        return segments
+
+    async def fetch_preview_from_platform(reply_id: str) -> Optional[str]:
         sender = session_ctx.websocket
         if not sender:
             return None
@@ -960,23 +891,29 @@ async def _expand_reply_reference(content: str, session_ctx: SessionContext) -> 
         if not raw_message:
             return None
         try:
+            from app.agent.codec import tag_codec
+
             message_processor = get_message_processor()
             processed = await message_processor.process_incoming_message(
                 platform=session_ctx.platform or "onebot",
                 raw_content=raw_message,
                 message_data={"role": "user", "content": raw_message},
             )
-            snippet = processed.compressed or processed.internal
+            preview = tag_codec.render(message_processor.content_compressor.compress_sync(processed.segments)) or processed.internal
         except Exception:
-            snippet = str(raw_message)
-        return sanitize_text(snippet)
+            preview = str(raw_message)
+        return _sanitize_reply_preview(preview)
 
-    async def repl(match: re.Match) -> str:
-        params_str = match.group("params") or ""
-        params = parse_params(params_str)
-        reply_id = extract_reply_id(params_str, params)
+    enriched = MessageChain()
+    for seg in segments:
+        if not isinstance(seg, Reply):
+            enriched.append(seg)
+            continue
+        ref = seg.ref
+        reply_id = (ref.message_id if ref.message_id is not None else ref.platform_message_id) or ""
         if not reply_id:
-            return "[消息获取失败]"
+            enriched.append(Text(text=_REPLY_FETCH_FAILED))
+            continue
         target_internal_id: Optional[str] = None
         target_platform_id: Optional[str] = None
         target_msg = session_ctx.get_message_by_id(reply_id)
@@ -990,40 +927,26 @@ async def _expand_reply_reference(content: str, session_ctx: SessionContext) -> 
                 target_platform_id = reply_id
                 target_msg = session_ctx.get_message_by_id(message_id)
         if not target_msg or not getattr(target_msg, "content", None):
-            fetched = await fetch_snippet_from_platform(reply_id)
-            if not fetched:
-                return f"[reply,id={reply_id},text=[消息获取失败]]"
-            snippet = fetched
+            preview = await fetch_preview_from_platform(reply_id)
+            if not preview:
+                enriched.append(seg.model_copy(update={"ref": ref.model_copy(update={"preview": _REPLY_FETCH_FAILED})}))
+                continue
         else:
-            raw_snippet = str(target_msg.content)
+            raw_preview = str(target_msg.content)
             try:
-                message_processor = get_message_processor()
-                compressed_snippet = await message_processor.content_compressor.compress(raw_snippet)
+                preview = await get_message_processor().content_compressor.compress(raw_preview)
             except Exception:
-                compressed_snippet = raw_snippet
-            snippet = sanitize_text(compressed_snippet)
-        if len(snippet) > 120:
-            snippet = snippet[:120] + "..."
+                preview = raw_preview
+            preview = _sanitize_reply_preview(preview)
+        if len(preview) > _REPLY_PREVIEW_LIMIT:
+            preview = preview[:_REPLY_PREVIEW_LIMIT] + "..."
+        updates: Dict[str, Any] = {"preview": preview}
         if target_internal_id:
-            params["id"] = str(target_internal_id)
-            params["message_id"] = str(target_internal_id)
+            updates["message_id"] = str(target_internal_id)
         if target_platform_id:
-            params["platform_id"] = str(target_platform_id)
-        params["text"] = snippet
-        rebuilt = ",".join(f"{k}={v}" for k, v in params.items() if v)
-        return f"[reply,{rebuilt}]"
-
-    matches = list(re.finditer(pattern, content))
-    if not matches:
-        return content
-    parts = []
-    last_end = 0
-    for match in matches:
-        parts.append(content[last_end:match.start()])
-        parts.append(await repl(match))
-        last_end = match.end()
-    parts.append(content[last_end:])
-    return "".join(parts)
+            updates["platform_message_id"] = str(target_platform_id)
+        enriched.append(seg.model_copy(update={"ref": ref.model_copy(update=updates)}))
+    return enriched
 
 
 def _parse_group_command(content: str) -> Optional[Dict[str, Any]]:
