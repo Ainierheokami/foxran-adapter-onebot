@@ -7,7 +7,6 @@ from app.message import (
 from typing import Any, List, Union, Optional
 
 import re
-from urllib.parse import urlparse
 from app.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -269,7 +268,8 @@ class OneBotAdapter(BasePlatformAdapter):
             params = []
             image_url = seg.media.url
             if image_url:
-                image_url = self._maybe_proxy_url(image_url)
+                # Media URLs were already proxied by the framework's outbound
+                # pipeline (MessageProcessor); the adapter only encodes.
                 # OneBot implementations commonly prefer file= for remote URLs
                 params.append(f"file={image_url}")
                 params.append(f"url={image_url}")
@@ -309,7 +309,6 @@ class OneBotAdapter(BasePlatformAdapter):
             params = []
             video_source = seg.media.file or seg.media.url
             if video_source:
-                video_source = self._maybe_proxy_url(video_source)
                 # OneBot v11 uses `file` for outbound videos; `url` is receive-only.
                 params.append(f"file={video_source}")
             if seg.cover is not None and seg.cover.url:
@@ -333,20 +332,3 @@ class OneBotAdapter(BasePlatformAdapter):
         if isinstance(internal_data, str):
             return internal_data
         return str(internal_data)
-
-    def _maybe_proxy_url(self, url: str) -> str:
-        parsed = urlparse(url)
-        if parsed.scheme not in ("http", "https"):
-            return url
-        # 已经是缓存地址则跳过
-        if "/api/media/cache/" in url:
-            return url
-        try:
-            from app.media.cache_store import cache_url
-            entry = cache_url(url, check_update=False)
-            access_url = entry.get("access_url") if isinstance(entry, dict) else None
-            if access_url:
-                return access_url
-        except Exception as e:
-            logger.warning(f"[OneBot适配器] 媒体缓存失败: {e}")
-        return url
