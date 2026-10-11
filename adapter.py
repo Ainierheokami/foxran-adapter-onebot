@@ -24,7 +24,6 @@ class OneBotAdapter(BasePlatformAdapter):
             from app.adapters.onebot_v11.tools.poke import PokeTool
             from app.adapters.onebot_v11.tools.delete_msg import DeleteMsgTool
             from app.adapters.onebot_v11.tools.set_group_card import SetGroupCardTool
-            from app.adapters.onebot_v11.tools.read_group_file import ReadGroupFileTool
             
             tool_registry.register_tool_class(ReadForwardMsgTool)
             tool_registry.register_tool_class(KickTool)
@@ -32,9 +31,8 @@ class OneBotAdapter(BasePlatformAdapter):
             tool_registry.register_tool_class(PokeTool)
             tool_registry.register_tool_class(DeleteMsgTool)
             tool_registry.register_tool_class(SetGroupCardTool)
-            tool_registry.register_tool_class(ReadGroupFileTool)
             
-            logger.info("[OneBot适配器] 已在本地热加载平台专属私有特权工具组合: read_forward, kick, ban, poke, delete_msg, set_group_card, read_group_file")
+            logger.info("[OneBot适配器] 已在本地热加载平台专属私有特权工具组合: read_forward, kick, ban, poke, delete_msg, set_group_card")
         except Exception as e:
             logger.error(f"[OneBot适配器] 注册平台专属特权工具失败: {e}")
 
@@ -242,7 +240,7 @@ class OneBotAdapter(BasePlatformAdapter):
 
     def _file_segment(self, data: Dict[str, Any]) -> File:
         """NapCat 的群/私聊文件段是 file=文件名, file_id=下载凭据, file_size=字节数。
-        file_id 是之后调用 get_group_file_url 换取下载地址的唯一凭据，必须保留；
+        file_id 由文件能力（network/file_resolver.py）换取下载地址，必须保留；
         段里附带的 url 是 ftn 临时地址，直接 GET 会被拒绝。"""
         raw_file = str(data.get("file") or "")
         # 发送方向的 file 是路径或 URL；接收方向（NapCat）的 file 就是文件名。

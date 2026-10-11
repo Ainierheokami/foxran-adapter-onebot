@@ -64,8 +64,14 @@ def _register_outbound_ports() -> None:
         platforms.update(str(account.get("platform_name") or "onebot") for account in onebot_v11_config.get_accounts())
     except Exception:
         pass
+    from app.media.files import file_resolvers
+    try:
+        from .network.file_resolver import onebot_file_resolver
+    except (ImportError, ValueError):
+        from network.file_resolver import onebot_file_resolver
     for platform in platforms:
         outbound_ports.register(platform, onebot_outbound_port, owner=__name__)
+        file_resolvers.register(platform, onebot_file_resolver, owner=__name__)
 
 
 def register_adapter(registry):
