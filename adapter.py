@@ -4,7 +4,7 @@ from app.message import (
     MessageRef, Poke, Reply, Segment, Text, Unknown, Video, Voice, segment_registry,
 )
 
-from typing import Any, List, Union, Optional
+from typing import Any, Dict, List, Union, Optional
 
 import re
 from app.logger import setup_logger
@@ -173,12 +173,7 @@ class OneBotAdapter(BasePlatformAdapter):
                 duration=self._safe_int(params.get("duration") or params.get("time")),
             )
         if match.group("file_cq"):
-            params = self._parse_params(match.group("file_params"))
-            return File(
-                media=MediaRef(url=params.get("url"), file=params.get("file")),
-                name=params.get("name"),
-                size=self._safe_int(params.get("size")),
-            )
+            return self._file_segment(self._parse_params(match.group("file_params")))
         if match.group("video_cq"):
             params = self._parse_params(match.group("video_params"))
             cover = params.get("cover")
@@ -223,11 +218,7 @@ class OneBotAdapter(BasePlatformAdapter):
                     duration=self._safe_int(data.get("duration") or data.get("time")),
                 ))
             elif seg_type == "file":
-                segments.append(File(
-                    media=MediaRef(url=data.get("url"), file=data.get("file")),
-                    name=data.get("name"),
-                    size=self._safe_int(data.get("size")),
-                ))
+                segments.append(self._file_segment(data))
             elif seg_type == "video":
                 cover = data.get("cover")
                 segments.append(Video(
@@ -246,6 +237,20 @@ class OneBotAdapter(BasePlatformAdapter):
                     fallback_text = f"[CQ:{seg_type}]"
                 segments.append(Unknown(platform="onebot", raw=seg, fallback_text=fallback_text))
         return segments
+
+    def _file_segment(self, data: Dict[str, Any]) -> File:
+        """NapCat 的群/私聊文件段是 file=文件名, file_id=下载凭据, file_size=字节数。
+        file_id 是之后调用 get_group_file_url 换取下载地址的唯一凭据，必须保留；
+        段里附带的 url 是 ftn 临时地址，直接 GET 会被拒绝。"""
+        raw_file = str(data.get("file") or "")
+        # 发送方向的 file 是路径或 URL；接收方向（NapCat）的 file 就是文件名。
+        looks_like_location = "://" in raw_file or raw_file.startswith(("/", "\\")) or re.match(r"^[a-zA-Z]:[\\/]", raw_file)
+        name = data.get("name") or (None if looks_like_location else raw_file or None)
+        return File(
+            media=MediaRef(url=data.get("url") or None, file=data.get("file_id") or data.get("file")),
+            name=name,
+            size=self._safe_int(data.get("size") or data.get("file_size")),
+        )
 
     def _safe_int(self, value: Any) -> Optional[int]:
         try:
