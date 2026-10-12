@@ -49,6 +49,9 @@ def _session_with_history():
         return message.internal_id if message else None
 
     return SimpleNamespace(
+        conversation=SimpleNamespace(group_id=987, self_id=999),
+        log=SimpleNamespace(platform_id_of=lambda _message_id: None),
+        platform_state={"self_role": "member"},
         session_notes={
             "onebot_target": {
                 "group_id": 987,

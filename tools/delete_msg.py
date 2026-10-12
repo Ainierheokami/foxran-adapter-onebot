@@ -173,12 +173,17 @@ class DeleteMsgTool(BaseTool):
         conversation = getattr(session_ctx, "conversation", None)
         session_notes = getattr(session_ctx, "session_notes", {}) or {}
         target_info = session_notes.get("onebot_target", {}) or {}
-        group_id = target_info.get("group_id") or (
-            conversation.group_id if conversation else None
+        group_id = (
+            conversation.group_id
+            if conversation and conversation.group_id is not None
+            else target_info.get("group_id")
         )
-        self_id = target_info.get("self_id") or (
-            session_notes.get("onebot_last_self_sent", {}) or {}
-        ).get("self_id") or (conversation.self_id if conversation else None)
+        self_id = (
+            conversation.self_id
+            if conversation and conversation.self_id is not None
+            else target_info.get("self_id")
+            or (session_notes.get("onebot_last_self_sent", {}) or {}).get("self_id")
+        )
         
         sender = getattr(session_ctx, "websocket", None)
         if not sender:
