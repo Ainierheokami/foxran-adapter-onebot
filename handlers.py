@@ -352,7 +352,11 @@ class OneBotBinding:
         self_id = event.get("self_id")
         bot_info = f"[Bot:{self_id}]" if self_id else ""
         sender = _sender_from_event(event)
-        logger.info(f"OneBot 收到消息 {source_info}{bot_info} {sender.name}({sender.id}): {segments.summary()}")
+        # File-only: the console shows the agent's reply tree instead of every group message.
+        logger.info(
+            f"OneBot 收到消息 {source_info}{bot_info} {sender.name}({sender.id}): {segments.summary()}",
+            extra={"console": False},
+        )
         if self.log_cfg.get("debug_full_message", True):
             logger.debug(f"OneBot 收到消息(完整): {event.get('raw_message') or event.get('message')}")
         if self.log_cfg.get("debug_full_event", True):
