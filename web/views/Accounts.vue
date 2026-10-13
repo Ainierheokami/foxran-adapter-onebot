@@ -19,22 +19,22 @@
   >
     <template #account-meta="{ account }">{{ account.id }} · {{ modeLabel(account.connection_mode) }}</template>
     <template #default="{ account }">
-      <div class="space-y-5">
+      <div class="ob:space-y-5">
         <AdapterFormSection index="01" title="账户身份" description="用于在控制台、连接状态和会话中识别这个机器人。" :icon="Fingerprint">
           <label><span>显示名称</span><input v-model="account.name" placeholder="主机器人" @input="markDirty" /></label>
           <label><span>账户 ID</span><input v-model="account.id" placeholder="main" @input="markDirty" /><small>仅支持字母、数字、下划线和连字符。</small></label>
-          <label class="setting-switch md:col-span-2"><span><b>启用账户</b><small>保存后建立正向连接，或开始等待反向连接。</small></span><input v-model="account.enabled" type="checkbox" @change="markDirty" /></label>
+          <label class="setting-switch ob:md:col-span-2"><span><b>启用账户</b><small>保存后建立正向连接，或开始等待反向连接。</small></span><input v-model="account.enabled" type="checkbox" @change="markDirty" /></label>
         </AdapterFormSection>
 
         <AdapterFormSection index="02" title="连接与鉴权" description="设置 OneBot 实现的连接方向、地址与访问令牌。" :icon="Cable">
           <label><span>连接模式</span><select v-model="account.connection_mode" @change="markDirty"><option value="forward">正向 WebSocket</option><option value="reverse">反向 WebSocket</option><option value="both">正向 + 反向</option></select></label>
           <label><span>鉴权传递</span><select v-model="account.access_token_in_url" @change="markDirty"><option :value="true">URL 查询参数</option><option :value="false">Authorization Header</option></select></label>
-          <label v-if="account.connection_mode !== 'reverse'" class="md:col-span-2"><span>正向 WebSocket 地址</span><input v-model="account.ws_url" placeholder="ws://127.0.0.1:8080" @input="markDirty" /></label>
-          <label class="md:col-span-2"><span>访问令牌</span><div class="secret-field"><input v-model="account.access_token" :type="showSecret ? 'text' : 'password'" autocomplete="new-password" :placeholder="account.access_token_set ? '已设置，留空保持不变' : '请输入访问令牌'" @input="markDirty" /><button type="button" :title="showSecret ? '隐藏' : '显示'" @click="showSecret = !showSecret"><EyeOff v-if="showSecret" class="h-4 w-4" /><Eye v-else class="h-4 w-4" /></button></div></label>
-          <div v-if="account.connection_mode !== 'forward'" class="md:col-span-2 rounded-lg border bg-muted/20 p-4">
-            <div class="text-xs font-medium">反向 WebSocket 地址</div>
-            <div class="mt-2 flex items-center gap-2 rounded-md border bg-background px-3 py-2"><code class="min-w-0 flex-1 truncate text-xs">{{ account.reverse_ws_path || `/onebot/v11/ws/${account.id}` }}</code><button class="text-muted-foreground transition-colors hover:text-foreground" @click="copyText(account.reverse_ws_path || `/onebot/v11/ws/${account.id}`)"><Copy class="h-4 w-4" /></button></div>
-            <p class="mt-2 text-xs text-muted-foreground">当前反向连接：{{ account.status?.reverse_connections || 0 }}</p>
+          <label v-if="account.connection_mode !== 'reverse'" class="ob:md:col-span-2"><span>正向 WebSocket 地址</span><input v-model="account.ws_url" placeholder="ws://127.0.0.1:8080" @input="markDirty" /></label>
+          <label class="ob:md:col-span-2"><span>访问令牌</span><div class="secret-field"><input v-model="account.access_token" :type="showSecret ? 'text' : 'password'" autocomplete="new-password" :placeholder="account.access_token_set ? '已设置，留空保持不变' : '请输入访问令牌'" @input="markDirty" /><button type="button" :title="showSecret ? '隐藏' : '显示'" @click="showSecret = !showSecret"><EyeOff v-if="showSecret" class="ob:h-4 ob:w-4" /><Eye v-else class="ob:h-4 ob:w-4" /></button></div></label>
+          <div v-if="account.connection_mode !== 'forward'" class="ob:md:col-span-2 ob:rounded-lg ob:border ob:bg-muted/20 ob:p-4">
+            <div class="ob:text-xs ob:font-medium">反向 WebSocket 地址</div>
+            <div class="ob:mt-2 ob:flex ob:items-center ob:gap-2 ob:rounded-md ob:border ob:bg-background ob:px-3 ob:py-2"><code class="ob:min-w-0 ob:flex-1 ob:truncate ob:text-xs">{{ account.reverse_ws_path || `/onebot/v11/ws/${account.id}` }}</code><button class="ob:text-muted-foreground ob:transition-colors ob:hover:text-foreground" @click="copyText(account.reverse_ws_path || `/onebot/v11/ws/${account.id}`)"><Copy class="ob:h-4 ob:w-4" /></button></div>
+            <p class="ob:mt-2 ob:text-xs ob:text-muted-foreground">当前反向连接：{{ account.status?.reverse_connections || 0 }}</p>
           </div>
         </AdapterFormSection>
 
@@ -45,9 +45,9 @@
           <label class="setting-switch"><span><b>包含 Bot ID</b><small>避免多个 Bot 在同群串话。</small></span><input v-model="account.session_id_include_bot_id" type="checkbox" @change="markDirty" /></label>
         </AdapterFormSection>
 
-        <details class="rounded-xl border bg-muted/10">
-          <summary class="cursor-pointer px-4 py-3 text-sm font-medium">高级连接参数</summary>
-          <div class="grid grid-cols-1 gap-4 border-t p-4 sm:grid-cols-2">
+        <details class="ob:rounded-xl ob:border ob:bg-muted/10">
+          <summary class="ob:cursor-pointer ob:px-4 ob:py-3 ob:text-sm ob:font-medium">高级连接参数</summary>
+          <div class="ob:grid ob:grid-cols-1 ob:gap-4 ob:border-t ob:p-4 ob:sm:grid-cols-2">
             <label><span>初始重连（秒）</span><input v-model.number="account.reconnect_initial_delay" type="number" min="0.5" @input="markDirty" /></label>
             <label><span>最大重连（秒）</span><input v-model.number="account.reconnect_max_delay" type="number" min="1" @input="markDirty" /></label>
             <label><span>Ping 间隔</span><input v-model.number="account.ping_interval" type="number" min="1" @input="markDirty" /></label>

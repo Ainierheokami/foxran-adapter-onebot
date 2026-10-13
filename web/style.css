@@ -1,5 +1,7 @@
-/* Utilities only: the WebUI already ships the base styles and theme variables. */
-@import "tailwindcss/theme.css" layer(theme);
+/* Utilities only: the WebUI already ships the base styles and theme variables.
+   Classes carry the `ob:` prefix so they never override the WebUI's own utilities
+   (an unprefixed `.flex` loaded after the WebUI beat its `md:hidden`). */
+@import "tailwindcss/theme.css" layer(theme) prefix(ob);
 @import "tailwindcss/utilities.css" layer(utilities);
 
 @variant dark (&:where(.dark, .dark *));
