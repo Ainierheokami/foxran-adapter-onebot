@@ -6,7 +6,9 @@ logger = setup_logger(__name__)
 
 class SetGroupCardTool(BaseTool):
     output_kind = "data"
-    result_visibility = "user_visible"
+    # The action is visible in the group; the receipt (with member IDs) is for the agent.
+    result_visibility = "agent_only"
+    continuation_policy = "continue_agent"
     name: str = "set_group_card"
     description: str = "修改群内某个成员的群名片/群昵称。或者如果目标是你自己，可以修改自己的名片。"
     tool_type: ToolType = "direct"

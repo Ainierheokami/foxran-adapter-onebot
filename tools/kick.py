@@ -6,7 +6,9 @@ logger = setup_logger(__name__)
 
 class KickTool(BaseTool):
     output_kind = "data"
-    result_visibility = "user_visible"
+    # The action is visible in the group; the receipt (with member IDs) is for the agent.
+    result_visibility = "agent_only"
+    continuation_policy = "continue_agent"
     name: str = "kick"
     description: str = "踢出群聊中的某个成员。需要机器人是群主或管理员。仅在OneBot平台有效。"
     # 由于这不是需要读取结果进行再思考的动作，可以直接定义为 direct 或者 default (direct)

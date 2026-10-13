@@ -6,7 +6,9 @@ logger = setup_logger(__name__)
 
 class BanTool(BaseTool):
     output_kind = "data"
-    result_visibility = "user_visible"
+    # The action is visible in the group; the receipt (with member IDs) is for the agent.
+    result_visibility = "agent_only"
+    continuation_policy = "continue_agent"
     name: str = "ban"
     description: str = "将群聊中的某个成员禁言指定时间。需要机器人是群主或管理员。仅在OneBot平台有效。"
     tool_type: ToolType = "direct"

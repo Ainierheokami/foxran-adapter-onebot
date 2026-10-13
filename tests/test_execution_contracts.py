@@ -7,14 +7,22 @@ from app.adapters.onebot_v11.tools.read_forward_msg import ReadForwardMsgTool
 from app.adapters.onebot_v11.tools.set_group_card import SetGroupCardTool
 
 
-def test_action_tools_are_user_visible_data_results():
-    for tool_class in (BanTool, KickTool, PokeTool, SetGroupCardTool):
+def test_group_actions_report_back_to_the_agent_instead_of_the_chat():
+    for tool_class in (BanTool, KickTool, SetGroupCardTool):
         contract = tool_class().get_execution_contract({})
         assert contract == {
             "output_kind": "data",
-            "visibility": "user_visible",
-            "continuation": "auto",
+            "visibility": "agent_only",
+            "continuation": "continue_agent",
         }
+
+
+def test_poke_has_no_receipt_to_hide():
+    assert PokeTool().get_execution_contract({}) == {
+        "output_kind": "data",
+        "visibility": "user_visible",
+        "continuation": "auto",
+    }
 
 
 def test_forward_reader_continues_agent_with_internal_data():
