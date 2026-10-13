@@ -5,7 +5,7 @@ import pytest
 from app.inbound.events import ConversationRef
 from app.media.files import FileUnavailable
 from app.message import File, MediaRef
-from network.file_resolver import onebot_file_resolver
+from app.adapters.onebot_v11.network.file_resolver import onebot_file_resolver
 
 
 def _session(scope="group", conv_id="748406347"):

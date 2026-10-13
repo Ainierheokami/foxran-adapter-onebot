@@ -4,14 +4,9 @@ from fastapi import APIRouter
 
 logger = logging.getLogger(__name__)
 
-try:
-    from .adapter import OneBotAdapter
-    from .api.endpoints import router as api_router
-    from .network.reverse_ws import router as reverse_ws_router
-except (ImportError, ValueError):
-    from adapter import OneBotAdapter
-    from api.endpoints import router as api_router
-    from network.reverse_ws import router as reverse_ws_router
+from .adapter import OneBotAdapter
+from .api.endpoints import router as api_router
+from .network.reverse_ws import router as reverse_ws_router
 
 router = APIRouter()
 router.include_router(api_router)
@@ -22,10 +17,7 @@ def _sync_echo_isolation():
     owner = "adapter:onebot"
     try:
         from app.adapters.outbound_tracker import load_echo_isolation_from_config
-        try:
-            from .config import onebot_v11_config
-        except (ImportError, ValueError):
-            from config import onebot_v11_config
+        from .config import onebot_v11_config
         cfg = onebot_v11_config.get_config(force_reload=True)
         loaded = load_echo_isolation_from_config(owner=owner, config=cfg)
         logger.info(
@@ -53,22 +45,15 @@ def _sync_echo_isolation():
 
 def _register_outbound_ports() -> None:
     from app.outbound import outbound_ports
-    try:
-        from .config import onebot_v11_config
-        from .network.senders import onebot_outbound_port
-    except (ImportError, ValueError):
-        from config import onebot_v11_config
-        from network.senders import onebot_outbound_port
+    from .config import onebot_v11_config
+    from .network.senders import onebot_outbound_port
     platforms = {"onebot"}
     try:
         platforms.update(str(account.get("platform_name") or "onebot") for account in onebot_v11_config.get_accounts())
     except Exception:
         pass
     from app.media.files import file_resolvers
-    try:
-        from .network.file_resolver import onebot_file_resolver
-    except (ImportError, ValueError):
-        from network.file_resolver import onebot_file_resolver
+    from .network.file_resolver import onebot_file_resolver
     for platform in platforms:
         outbound_ports.register(platform, onebot_outbound_port, owner=__name__)
         file_resolvers.register(platform, onebot_file_resolver, owner=__name__)
@@ -96,20 +81,14 @@ async def startup():
 
 async def enable():
     """Start adapter-owned resources while enabled."""
-    try:
-        from .network.client import onebot_v11_client
-    except (ImportError, ValueError):
-        from network.client import onebot_v11_client
+    from .network.client import onebot_v11_client
     await onebot_v11_client.start()
     _sync_echo_isolation()
 
 
 async def disable():
     """Stop adapter-owned resources without uninstalling."""
-    try:
-        from .network.client import onebot_v11_client
-    except (ImportError, ValueError):
-        from network.client import onebot_v11_client
+    from .network.client import onebot_v11_client
     await onebot_v11_client.stop()
     try:
         from app.adapters.outbound_tracker import get_outbound_tracker

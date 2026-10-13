@@ -40,6 +40,10 @@ access_token: "xxx"            # 连接鉴权 Token（插件首次运行会自�
 
 工具已声明结构化执行契约：群管和互动操作返回用户可见的 `data` 结果；读取合并转发属于 Agent 内部数据，并要求宿主在读取后继续组织最终回答。
 
+## 📦 Python 依赖
+
+`requirements.txt` 列出本适配器自己用到的库（`websockets>=14`），插件市场安装和更新时会自动 `pip install`。手动安装时在宿主的 Python 环境里执行 `pip install -r requirements.txt`。
+
 ## 🖥 WebUI 账户设置
 
 账户设置页随适配器一起发布：`web/` 是源码，构建产物是根目录的 `index.umd.js`（`foxran.yaml` 中的 `adapter.frontend_bundle`）。WebUI 启动时加载它，页面通过 `settingsPanels` 出现在“设置 → 适配器”里，并复用宿主提供的 `window.Foxran.api` 与 `window.Foxran.ui` 组件。需要宿主 4.0.0 及以上。

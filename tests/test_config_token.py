@@ -1,11 +1,6 @@
-import sys
-from pathlib import Path
-
 import yaml
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-import config as module
+from app.adapters.onebot_v11 import config as module
 
 
 def test_empty_access_token_is_generated_as_valid_yaml(monkeypatch, tmp_path):

@@ -1,9 +1,4 @@
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-import handlers as module
+from app.adapters.onebot_v11 import handlers as module
 
 
 def test_mentioned_ids_lists_every_target_without_guessing_meaning():

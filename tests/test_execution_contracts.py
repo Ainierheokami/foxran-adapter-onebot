@@ -1,15 +1,10 @@
-import sys
-from pathlib import Path
 import pytest
 
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from tools.ban import BanTool
-from tools.kick import KickTool
-from tools.poke import PokeTool
-from tools.read_forward_msg import ReadForwardMsgTool
-from tools.set_group_card import SetGroupCardTool
+from app.adapters.onebot_v11.tools.ban import BanTool
+from app.adapters.onebot_v11.tools.kick import KickTool
+from app.adapters.onebot_v11.tools.poke import PokeTool
+from app.adapters.onebot_v11.tools.read_forward_msg import ReadForwardMsgTool
+from app.adapters.onebot_v11.tools.set_group_card import SetGroupCardTool
 
 
 def test_action_tools_are_user_visible_data_results():

@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tools import read_forward_msg as module
+from app.adapters.onebot_v11.tools import read_forward_msg as module
 
 
 def test_forward_list_content_preserves_image_as_guid(monkeypatch):
