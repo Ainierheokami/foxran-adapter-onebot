@@ -10,7 +10,7 @@ from starlette.websockets import WebSocketState
 
 from app.logger import setup_logger
 from app.message import ExtensionSegment, File, MessageChain, Reply, Segment, segment_registry
-from app.outbound import OutboundMessage
+from app.outbound import OutboundMessage, RecallRefused
 
 
 logger = setup_logger(__name__)
@@ -68,6 +68,42 @@ class OneBotOutboundPort:
         except Exception as e:
             logger.warning(f"OneBot 动作发送失败: {action}, 错误: {e}")
             return False
+
+    async def recall(self, session_ctx: Any, conversation: Any, platform_message_id: str, *, own: bool) -> None:
+        """Recall a message (framework tool ``delete_msg``); other members' messages need group power."""
+        from app.adapters.onebot_v11.store.action_tracker import onebot_action_tracker
+        from app.adapters.onebot_v11.tools.utils import verify_punish_permission
+
+        transport = self._transport(conversation.account_id)
+        if transport is None:
+            raise RecallRefused("OneBot 账号未连接")
+        sender = _ActionSender(transport)
+        try:
+            message_id = int(platform_message_id)
+        except (TypeError, ValueError):
+            raise RecallRefused(f"无效的 OneBot 消息 ID: {platform_message_id}") from None
+
+        if not own:
+            info = await onebot_action_tracker.request(sender, "get_msg", {"message_id": message_id}, timeout=3.0)
+            data = {}
+            if info and info.get("status") in ("ok", "success"):
+                data = info.get("data") or {}
+            author = (data.get("sender") or {}).get("user_id")
+            group_id = data.get("group_id") or conversation.group_id
+            self_id = conversation.self_id
+            if group_id and author is not None and str(author) != str(self_id):
+                if self_id is None:
+                    raise RecallRefused("无法确认 Bot 身份，不能判断这条消息是否属于自己")
+                permitted, reason = await verify_punish_permission(
+                    int(group_id), int(author), int(self_id), onebot_action_tracker, sender,
+                    bot_role_hint=session_ctx.platform_state.get("self_role"),
+                )
+                if not permitted:
+                    raise RecallRefused(f"权限不足以撤回此成员的消息：{reason}")
+
+        response = await onebot_action_tracker.request(sender, "delete_msg", {"message_id": message_id}, timeout=5.0)
+        if not response or response.get("status") not in ("ok", "success"):
+            raise RecallRefused((response or {}).get("msg") or "OneBot 实现没有确认撤回")
 
     def encode(self, session_ctx: Any, segments: MessageChain) -> OutboundMessage:
         """CQ text per message part; files become their own upload actions."""
@@ -149,6 +185,13 @@ def _with_platform_reply_id(session_ctx: Any, seg: Reply) -> Reply:
     seg = seg.model_copy(deep=True)
     seg.ref.platform_message_id = platform_id
     return seg
+
+
+class _ActionSender:
+    """Adapts a port transport to what ``onebot_action_tracker.request`` sends through."""
+
+    def __init__(self, transport: Any) -> None:
+        self.send_action = transport
 
 
 onebot_outbound_port = OneBotOutboundPort()

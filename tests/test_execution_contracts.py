@@ -6,7 +6,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tools.ban import BanTool
-from tools.delete_msg import DeleteMsgTool
 from tools.kick import KickTool
 from tools.poke import PokeTool
 from tools.read_forward_msg import ReadForwardMsgTool
@@ -14,7 +13,7 @@ from tools.set_group_card import SetGroupCardTool
 
 
 def test_action_tools_are_user_visible_data_results():
-    for tool_class in (BanTool, DeleteMsgTool, KickTool, PokeTool, SetGroupCardTool):
+    for tool_class in (BanTool, KickTool, PokeTool, SetGroupCardTool):
         contract = tool_class().get_execution_contract({})
         assert contract == {
             "output_kind": "data",

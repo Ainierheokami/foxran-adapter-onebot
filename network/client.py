@@ -2,13 +2,13 @@
 
 import asyncio
 import contextlib
-import inspect
 import json
 import uuid
 from typing import Any, Dict, Optional
 from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl
 
 import websockets
+from websockets.asyncio.client import ClientConnection
 
 from app.logger import setup_logger
 from app.adapters.onebot_v11.config import onebot_v11_config
@@ -22,23 +22,10 @@ from app.utils.metrics_manager import metrics
 logger = setup_logger(__name__)
 
 
-def _headers_kwarg() -> str:
-    """websockets 14+ takes ``additional_headers``; the legacy client (<= 13) took ``extra_headers``."""
-    try:
-        params = inspect.signature(websockets.connect).parameters
-    except (TypeError, ValueError):
-        return "additional_headers"
-    return "additional_headers" if "additional_headers" in params else "extra_headers"
-
-
-_HEADERS_KWARG = _headers_kwarg()
-
-
 class OneBotV11WsClient:
     def __init__(self, account_id: str):
         self.account_id = account_id
-        # websockets ClientConnection (14+) or legacy WebSocketClientProtocol.
-        self._ws: Optional[Any] = None
+        self._ws: Optional[ClientConnection] = None
         self._connected: bool = False
         self._run_task: Optional[asyncio.Task] = None
         self._stop_event = asyncio.Event()
@@ -154,7 +141,7 @@ class OneBotV11WsClient:
             ws_url,
             ping_interval=ping_interval,
             ping_timeout=ping_timeout,
-            **{_HEADERS_KWARG: headers},
+            additional_headers=headers,
         ) as ws:
             self._ws = ws
             self._connected = True

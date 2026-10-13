@@ -4,7 +4,7 @@ from app.message import (
     MessageRef, Poke, Reply, Segment, Text, Unknown, Video, Voice, segment_registry,
 )
 
-from typing import Any, Dict, List, Union, Optional
+from typing import Any, Dict, List, Optional
 
 import re
 from app.logger import setup_logger
@@ -22,17 +22,15 @@ class OneBotAdapter(BasePlatformAdapter):
             from app.adapters.onebot_v11.tools.kick import KickTool
             from app.adapters.onebot_v11.tools.ban import BanTool
             from app.adapters.onebot_v11.tools.poke import PokeTool
-            from app.adapters.onebot_v11.tools.delete_msg import DeleteMsgTool
             from app.adapters.onebot_v11.tools.set_group_card import SetGroupCardTool
             
             tool_registry.register_tool_class(ReadForwardMsgTool)
             tool_registry.register_tool_class(KickTool)
             tool_registry.register_tool_class(BanTool)
             tool_registry.register_tool_class(PokeTool)
-            tool_registry.register_tool_class(DeleteMsgTool)
             tool_registry.register_tool_class(SetGroupCardTool)
             
-            logger.info("[OneBot适配器] 已在本地热加载平台专属私有特权工具组合: read_forward, kick, ban, poke, delete_msg, set_group_card")
+            logger.info("[OneBot适配器] 已在本地热加载平台专属私有特权工具组合: read_forward, kick, ban, poke, set_group_card")
         except Exception as e:
             logger.error(f"[OneBot适配器] 注册平台专属特权工具失败: {e}")
 
@@ -96,7 +94,7 @@ class OneBotAdapter(BasePlatformAdapter):
 
         tool_names = ["poke", "read_forward_msg"]
         if is_group:
-            tool_names.extend(["delete_msg", "set_group_card"])
+            tool_names.append("set_group_card")
         if has_power:
             tool_names.extend(["kick", "ban"])
         return tool_names

@@ -1,4 +1,4 @@
-"""Forward WS connects with the installed websockets version and sends the token header."""
+"""The forward WS client sends the access token header (websockets 14+ ``additional_headers``)."""
 
 import asyncio
 
@@ -10,19 +10,12 @@ pytest.importorskip("app.adapters.onebot_v11.network.client")
 from app.adapters.onebot_v11.network import client as client_module
 
 
-def _request_headers(connection):
-    request = getattr(connection, "request", None)  # websockets 14+
-    if request is not None:
-        return request.headers
-    return connection.request_headers  # legacy server
-
-
 @pytest.mark.asyncio
 async def test_forward_connection_sends_authorization_header():
     seen = {}
 
-    async def handler(connection, *_path):
-        seen["authorization"] = _request_headers(connection).get("Authorization")
+    async def handler(connection):
+        seen["authorization"] = connection.request.headers.get("Authorization")
         await connection.close()
 
     async with websockets.serve(handler, "127.0.0.1", 0) as server:
