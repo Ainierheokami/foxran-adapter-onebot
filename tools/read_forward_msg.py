@@ -3,7 +3,7 @@ import html
 import re
 from typing import List, Tuple
 
-from app.data_mappers.url_mapper import url_mapper
+from app.agent.compression.url_mapper import url_mapper
 from app.tools.base import BaseTool, ToolType, ToolResult
 from app.logger import setup_logger
 

@@ -272,7 +272,7 @@ class OneBotAdapter(BasePlatformAdapter):
             image_url = seg.media.url
             if image_url:
                 # Media URLs were already proxied by the framework's outbound
-                # pipeline (MessageProcessor); the adapter only encodes.
+                # pipeline (app/inbound/normalize.py); the adapter only encodes.
                 # OneBot implementations commonly prefer file= for remote URLs
                 params.append(f"file={image_url}")
                 params.append(f"url={image_url}")
