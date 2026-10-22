@@ -64,12 +64,11 @@ def register_adapter(registry):
     _register_outbound_ports()
     onebot_adapter = OneBotAdapter()
     registry.register_adapter('onebot', onebot_adapter)
-    registry.register_adapter('qq', onebot_adapter)  # QQ平台使用OneBot
     
     # 注册自动检测规则
     registry.register_auto_detect(
         'onebot', 
-        lambda p: 'qq' in p.lower() or 'onebot' in p.lower()
+        lambda p: p.lower() == 'qq' or 'onebot' in p.lower()
     )
     _sync_echo_isolation()
 
