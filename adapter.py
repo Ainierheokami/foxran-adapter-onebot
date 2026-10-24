@@ -10,6 +10,8 @@ import re
 from app.logger import setup_logger
 
 logger = setup_logger(__name__)
+# 表情包的摘要，宿主按它认出表情包（Image.is_sticker）
+_STICKER_SUMMARY = "[动画表情]"
 
 class OneBotAdapter(BasePlatformAdapter):
     def __init__(self, **kwargs):
@@ -158,6 +160,8 @@ class OneBotAdapter(BasePlatformAdapter):
                 summary_match = re.search(r'(?:summary|ocr)=([^,\]]*)', params_str)
                 if summary_match:
                     image_summary = summary_match.group(1).strip()
+            if not image_summary and re.search(r'sub_type=1(?=,|$)', params_str):
+                image_summary = _STICKER_SUMMARY
             return Image(media=MediaRef(url=image_url or ""), summary=image_summary)
         if match.group("poke_cq"):
             return Poke(target=match.group("poke_id"), name=match.group("poke_name"))
@@ -204,7 +208,17 @@ class OneBotAdapter(BasePlatformAdapter):
                 segments.append(Mention(target=str(data.get("qq")), name=data.get("name")))
             elif seg_type == "image":
                 image_url = data.get("url") or data.get("file") or ""
-                segments.append(Image(media=MediaRef(url=str(image_url)), summary=data.get("summary") or data.get("ocr")))
+                summary = data.get("summary") or data.get("ocr")
+                if not summary and str(data.get("sub_type") or "") == "1":
+                    summary = _STICKER_SUMMARY  # sub_type=1 是表情包
+                segments.append(Image(media=MediaRef(url=str(image_url)), summary=summary))
+            elif seg_type == "mface":
+                # 商城表情：摘要是表情名，如 [哭哭]
+                name = str(data.get("summary") or "").strip("[] ")
+                segments.append(Image(
+                    media=MediaRef(url=str(data.get("url") or "")),
+                    summary=f"[动画表情:{name}]" if name else _STICKER_SUMMARY,
+                ))
             elif seg_type == "poke":
                 segments.append(Poke(target=str(data.get("qq"))))
             elif seg_type == "reply":
