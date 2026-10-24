@@ -32,6 +32,8 @@ DEFAULT_ONEBOT_V11_CONFIG: Dict[str, Any] = {
     "reconnect_max_delay": 30.0,
     "ping_interval": 20.0,
     "ping_timeout": 10.0,
+    # 同一会话相邻两条消息至少隔多久（毫秒）；连发几条只隔几毫秒容易触发 QQ 风控。0 表示不限。
+    "send_interval_ms": 400,
     "echo_isolation": {
         "enabled": False,
         "peer_bot_ids": {},

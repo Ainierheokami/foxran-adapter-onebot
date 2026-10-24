@@ -22,7 +22,10 @@ enabled: true                  # 是否开启本适配器
 connection_mode: "forward"     # 默认采用正向 WebSocket 模式连接
 ws_url: "ws://127.0.0.1:8080"  # OneBot 提供端的 WebSocket 服务地址
 access_token: "xxx"            # 连接鉴权 Token（插件首次运行会自动随机生成以确保安全）
+send_interval_ms: 400          # 同一会话相邻两条消息至少间隔多久（毫秒），防止连发触发风控；0 不限
 ```
+
+同一个群或私聊的消息始终按交给适配器的顺序逐条发出；一轮回复里连发多条时，相邻两条至少间隔 `send_interval_ms`。距上一条已经超过这个间隔的消息不会额外等待，不同会话之间互不影响。
 
 *(修改配置后支持系统热重载，无需重启核心服务)*
 

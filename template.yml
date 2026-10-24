@@ -34,6 +34,10 @@ reconnect_max_delay: 30.0     # 最大重连间隔（秒）
 ping_interval: 20.0  # 心跳间隔（秒）
 ping_timeout: 10.0   # 心跳超时（秒）
 
+# 同一个群或私聊里相邻两条消息至少间隔多久（毫秒）。一轮回复里连发几条只隔几毫秒，
+# 容易触发 QQ 风控；同一会话的消息始终按顺序逐条发出。距上一条已超过间隔时不额外等待。0 表示不限。
+send_interval_ms: 400
+
 # 日志输出控制
 logging:
   log_message: true       # 是否打印消息类事件

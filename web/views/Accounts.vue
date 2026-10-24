@@ -43,6 +43,7 @@
           <label><span>会话前缀</span><input v-model="account.session_id_prefix" @input="markDirty" /></label>
           <label class="setting-switch"><span><b>群聊共享会话</b><small>同群成员共享上下文。</small></span><input v-model="account.use_group_as_session" type="checkbox" @change="markDirty" /></label>
           <label class="setting-switch"><span><b>包含 Bot ID</b><small>避免多个 Bot 在同群串话。</small></span><input v-model="account.session_id_include_bot_id" type="checkbox" @change="markDirty" /></label>
+          <label><span>连发间隔（毫秒）</span><input v-model.number="account.send_interval_ms" type="number" min="0" step="50" @input="markDirty" /><small class="ob:text-xs ob:text-muted-foreground">同一会话相邻两条消息至少隔这么久，消息始终按顺序发出；连发只隔几毫秒容易触发风控。0 不限。</small></label>
         </AdapterFormSection>
 
         <details class="ob:rounded-xl ob:border ob:bg-muted/10">
@@ -76,7 +77,7 @@ const message = ref('')
 let timer: number | undefined
 const current = computed(() => accounts.value[selected.value])
 const statusHint = computed(() => current.value?.status?.reverse_connections ? `${current.value.status.reverse_connections} 个反向 WebSocket 已连接` : '连接状态会自动刷新')
-const defaults = (): Account => ({ id: `onebot-${Date.now().toString(36)}`, name: '新 OneBot', enabled: false, connection_mode: 'forward', ws_url: 'ws://127.0.0.1:8080', access_token: '', access_token_in_url: true, platform_name: 'onebot', session_id_prefix: 'onebot', use_group_as_session: true, session_id_include_bot_id: true, reconnect_initial_delay: 2, reconnect_max_delay: 30, ping_interval: 20, ping_timeout: 10 })
+const defaults = (): Account => ({ id: `onebot-${Date.now().toString(36)}`, name: '新 OneBot', enabled: false, connection_mode: 'forward', ws_url: 'ws://127.0.0.1:8080', access_token: '', access_token_in_url: true, platform_name: 'onebot', session_id_prefix: 'onebot', use_group_as_session: true, session_id_include_bot_id: true, reconnect_initial_delay: 2, reconnect_max_delay: 30, ping_interval: 20, ping_timeout: 10, send_interval_ms: 400 })
 function markDirty() { dirty.value = true; message.value = '' }
 function modeLabel(mode = '') { return ({ forward: '正向', reverse: '反向', both: '双向' } as Record<string,string>)[mode] || mode }
 async function fetchAccounts(silent = false) { if (!silent) busy.value = true; try { const fresh = await loadAccounts(); if (!dirty.value || !silent) accounts.value = fresh; error.value = '' } catch (e: any) { error.value = e?.response?.data?.detail || '无法读取 OneBot 配置，请确认适配器已安装并启用。' } finally { busy.value = false } }
