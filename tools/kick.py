@@ -1,8 +1,17 @@
-﻿from typing import Dict, Any, Optional
-from app.tools.base import BaseTool, ToolType, ToolResult
+﻿from typing import Any, Optional
+from pydantic import ConfigDict, Field
+
+from app.tools.base import BaseTool, ToolInputSchema, ToolType, ToolResult
 from app.logger import setup_logger
 
 logger = setup_logger(__name__)
+
+class KickInput(ToolInputSchema):
+    # QQ 号常被写成 int；宿主 4.8.41 前的 ToolInputSchema 不会自动转字符串
+    model_config = ConfigDict(coerce_numbers_to_str=True)
+    user_id: str = Field(..., description="要踢出的用户ID（目标成员的QQ号或平台唯一标识）。")
+    reject_add_request: bool = Field(False, description="拒绝此人的后续加群请求。默认为 false。")
+
 
 class KickTool(BaseTool):
     output_kind = "data"
@@ -14,23 +23,8 @@ class KickTool(BaseTool):
     # 由于这不是需要读取结果进行再思考的动作，可以直接定义为 direct 或者 default (direct)
     tool_type: ToolType = "direct"
     
-    def get_input_schema_for_llm(self) -> Dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "user_id": {
-                    "type": "string",
-                    "description": "要踢出的用户ID（目标成员的QQ号或平台唯一标识）。"
-                },
-                "reject_add_request": {
-                    "type": "boolean",
-                    "description": "拒绝此人的后续加群请求。默认为 false。",
-                    "default": False
-                }
-            },
-            "required": ["user_id"]
-        }
-        
+    args_schema = KickInput
+
     async def execute(self, user_id: str = "", reject_add_request: bool = False, session_ctx: Optional[Any] = None, **kwargs) -> ToolResult:
         if not session_ctx:
             return ToolResult(self.name, False, error="缺少会话上下文，无法执行踢人操作。")

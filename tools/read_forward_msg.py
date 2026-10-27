@@ -4,7 +4,9 @@ import re
 from typing import List, Tuple
 
 from app.agent.compression.url_mapper import url_mapper
-from app.tools.base import BaseTool, ToolType, ToolResult
+from pydantic import ConfigDict, Field
+
+from app.tools.base import BaseTool, ToolInputSchema, ToolType, ToolResult
 from app.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -108,6 +110,12 @@ def _extract_forward_messages(data: Any) -> List[Dict[str, Any]]:
         })
     return normalized
 
+class ReadForwardMsgInput(ToolInputSchema):
+    # QQ 号常被写成 int；宿主 4.8.41 前的 ToolInputSchema 不会自动转字符串
+    model_config = ConfigDict(coerce_numbers_to_str=True)
+    message_id: str = Field(..., description="需要读取的转发消息的 message_id，通常可以从 [收到聚合转发记录,id=xxx] 中提取得到。")
+
+
 class ReadForwardMsgTool(BaseTool):
     output_kind = "data"
     result_visibility = "agent_only"
@@ -116,18 +124,8 @@ class ReadForwardMsgTool(BaseTool):
     description: str = "获取合并转发消息内的详细记录。只能读取平台特有的合并转发结构。"
     tool_type: ToolType = "perceptual"
     
-    def get_input_schema_for_llm(self) -> Dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "message_id": {
-                    "type": "string",
-                    "description": "需要读取的转发消息的 message_id，通常可以从 [收到聚合转发记录,id=xxx] 中提取得到。"
-                }
-            },
-            "required": ["message_id"]
-        }
-        
+    args_schema = ReadForwardMsgInput
+
     async def execute(self, message_id: str = "", session_ctx: Optional[Any] = None, **kwargs) -> ToolResult:
         if not session_ctx:
             return ToolResult(self.name, False, error="缺少会话上下文，无法读取平台数据。")

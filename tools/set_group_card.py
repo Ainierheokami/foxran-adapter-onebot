@@ -1,8 +1,17 @@
-﻿from typing import Dict, Any, Optional
-from app.tools.base import BaseTool, ToolType, ToolResult
+﻿from typing import Any, Optional
+from pydantic import ConfigDict, Field
+
+from app.tools.base import BaseTool, ToolInputSchema, ToolType, ToolResult
 from app.logger import setup_logger
 
 logger = setup_logger(__name__)
+
+class SetGroupCardInput(ToolInputSchema):
+    # QQ 号常被写成 int；宿主 4.8.41 前的 ToolInputSchema 不会自动转字符串
+    model_config = ConfigDict(coerce_numbers_to_str=True)
+    user_id: str = Field(..., description="目标成员的QQ号或平台唯一标识（如果要改自己的，请填自己的ID）。")
+    card: str = Field(..., description="要修改而成的新名片（空字符串表示删除名片，恢复原本昵称）。")
+
 
 class SetGroupCardTool(BaseTool):
     output_kind = "data"
@@ -13,22 +22,8 @@ class SetGroupCardTool(BaseTool):
     description: str = "修改群内某个成员的群名片/群昵称。或者如果目标是你自己，可以修改自己的名片。"
     tool_type: ToolType = "direct"
     
-    def get_input_schema_for_llm(self) -> Dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "user_id": {
-                    "type": "string",
-                    "description": "目标成员的QQ号或平台唯一标识（如果要改自己的，请填自己的ID）。"
-                },
-                "card": {
-                    "type": "string",
-                    "description": "要修改而成的新名片（空字符串表示删除名片，恢复原本昵称）。"
-                }
-            },
-            "required": ["user_id", "card"]
-        }
-        
+    args_schema = SetGroupCardInput
+
     async def execute(self, user_id: str = "", card: str = "", session_ctx: Optional[Any] = None, **kwargs) -> ToolResult:
         if not session_ctx:
             return ToolResult(self.name, False, error="缺少会话上下文，无法执行操作。")

@@ -1,8 +1,17 @@
-﻿from typing import Dict, Any, Optional
-from app.tools.base import BaseTool, ToolType, ToolResult
+﻿from typing import Any, Optional
+from pydantic import ConfigDict, Field
+
+from app.tools.base import BaseTool, ToolInputSchema, ToolType, ToolResult
 from app.logger import setup_logger
 
 logger = setup_logger(__name__)
+
+class BanInput(ToolInputSchema):
+    # QQ 号常被写成 int；宿主 4.8.41 前的 ToolInputSchema 不会自动转字符串
+    model_config = ConfigDict(coerce_numbers_to_str=True)
+    user_id: str = Field(..., description="要禁言的用户ID（目标成员的QQ号或平台唯一标识）。")
+    duration: int = Field(1800, description="禁言的时长，单位为秒。0 表示解除禁言。默认为 1800 秒（30分钟）。")
+
 
 class BanTool(BaseTool):
     output_kind = "data"
@@ -13,23 +22,8 @@ class BanTool(BaseTool):
     description: str = "将群聊中的某个成员禁言指定时间。需要机器人是群主或管理员。仅在OneBot平台有效。"
     tool_type: ToolType = "direct"
     
-    def get_input_schema_for_llm(self) -> Dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "user_id": {
-                    "type": "string",
-                    "description": "要禁言的用户ID（目标成员的QQ号或平台唯一标识）。"
-                },
-                "duration": {
-                    "type": "integer",
-                    "description": "禁言的时长，单位为秒。0 表示解除禁言。默认为 1800 秒（30分钟）。",
-                    "default": 1800
-                }
-            },
-            "required": ["user_id"]
-        }
-        
+    args_schema = BanInput
+
     async def execute(self, user_id: str = "", duration: int = 1800, session_ctx: Optional[Any] = None, **kwargs) -> ToolResult:
         if not session_ctx:
             return ToolResult(self.name, False, error="缺少会话上下文，无法执行禁言操作。")

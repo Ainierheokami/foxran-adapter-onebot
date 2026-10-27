@@ -1,8 +1,16 @@
-from typing import Dict, Any, Optional
-from app.tools.base import BaseTool, ToolType, ToolResult
+from typing import Any, Optional
+from pydantic import ConfigDict, Field
+
+from app.tools.base import BaseTool, ToolInputSchema, ToolType, ToolResult
 from app.logger import setup_logger
 
 logger = setup_logger(__name__)
+
+class PokeInput(ToolInputSchema):
+    # QQ 号常被写成 int；宿主 4.8.41 前的 ToolInputSchema 不会自动转字符串
+    model_config = ConfigDict(coerce_numbers_to_str=True)
+    user_id: str = Field(..., description="要戳一戳的目标用户ID（QQ号）。")
+
 
 class PokeTool(BaseTool):
     output_kind = "data"
@@ -11,18 +19,8 @@ class PokeTool(BaseTool):
     description: str = "戳一戳某个成员的面部或头像。可用于群聊中提醒或互动对方。"
     tool_type: ToolType = "direct"
     
-    def get_input_schema_for_llm(self) -> Dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "user_id": {
-                    "type": "string",
-                    "description": "要戳一戳的目标用户ID（QQ号）。"
-                }
-            },
-            "required": ["user_id"]
-        }
-        
+    args_schema = PokeInput
+
     async def execute(self, user_id: str = "", session_ctx: Optional[Any] = None, **kwargs) -> ToolResult:
         if not session_ctx:
             return ToolResult(self.name, False, error="缺少会话上下文，无法执行操作。")
