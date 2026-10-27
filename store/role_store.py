@@ -11,11 +11,18 @@ from app.utils.sqlite_utils import connect_sqlite
 logger = setup_logger(__name__)
 
 VALID_GROUP_ROLES = {"owner", "admin", "member"}
-ROLE_TTL = 600.0
+# 权限变动会推 group_admin 通知、Bot 自己发言的回显也带身份，接口只是兜底核对，不必频繁查
+ROLE_TTL = 6 * 3600.0
 UNKNOWN_COOLDOWN = 60.0
+MAX_UNKNOWN_COOLDOWN = 30 * 60.0
+# 同一身份反复出现时（每条回显都带）隔这么久才重写一次库，身份变了立刻写
+PERSIST_REFRESH = 3600.0
 DB_PATH = Path(DB_DIR) / "onebot_role_cache.db"
 
 BotRoleCache = Dict[tuple[int, int], tuple[str, float]]
+
+_db_ready = False
+_persisted: Dict[tuple[int, int], tuple[str, float]] = {}
 
 
 def normalize_group_role(role) -> Optional[str]:
@@ -24,6 +31,9 @@ def normalize_group_role(role) -> Optional[str]:
 
 
 def _ensure_db() -> None:
+    global _db_ready
+    if _db_ready and DB_PATH.exists():
+        return
     with connect_sqlite(DB_PATH) as conn:
         conn.execute(
             """
@@ -38,6 +48,7 @@ def _ensure_db() -> None:
             """
         )
         conn.commit()
+    _db_ready = True
 
 
 def persist_bot_role(group_id: int, self_id: int, role: str, *, source: str = "unknown") -> None:
@@ -59,6 +70,7 @@ def persist_bot_role(group_id: int, self_id: int, role: str, *, source: str = "u
             (int(group_id), int(self_id), normalized, now, source),
         )
         conn.commit()
+    _persisted[(int(group_id), int(self_id))] = (normalized, now)
 
 
 def load_bot_role(group_id: int, self_id: int) -> Optional[Tuple[str, float]]:
@@ -92,7 +104,12 @@ def remember_bot_role(
     normalized = normalize_group_role(role)
     if not normalized:
         return None
-    cache[(int(group_id), int(self_id))] = (normalized, time.time())
+    key = (int(group_id), int(self_id))
+    now = time.time()
+    cache[key] = (normalized, now)
+    written = _persisted.get(key)
+    if written and written[0] == normalized and now - written[1] < PERSIST_REFRESH:
+        persist = False
     if persist:
         try:
             persist_bot_role(int(group_id), int(self_id), normalized, source=source)
@@ -108,13 +125,19 @@ def get_cached_bot_role(
     *,
     ttl: float = ROLE_TTL,
     load_persistent: bool = True,
+    allow_stale: bool = False,
 ) -> Optional[str]:
+    """The cached role, or None once it is older than ``ttl``.
+
+    ``allow_stale`` returns the last known role however old it is: when the
+    API cannot be reached, a role learned earlier beats guessing "member".
+    """
     cache_key = (int(group_id), int(self_id))
     now = time.time()
     cached = cache.get(cache_key)
     if cached:
         role, ts = cached
-        if role in VALID_GROUP_ROLES and now - ts < ttl:
+        if role in VALID_GROUP_ROLES and (allow_stale or now - ts < ttl):
             return role
 
     if not load_persistent:
@@ -129,7 +152,14 @@ def get_cached_bot_role(
         return None
 
     role, ts = persisted
-    if now - ts > ttl:
+    _persisted.setdefault(cache_key, persisted)
+    if now - ts > ttl and not allow_stale:
         return None
-    cache[cache_key] = (role, ts)
+    if now - ts <= ttl:
+        cache[cache_key] = (role, ts)
     return role
+
+
+def unknown_cooldown(failures: int) -> float:
+    """60s after the first failure, doubling each time the retry fails too, up to 30 min."""
+    return min(UNKNOWN_COOLDOWN * (2 ** max(0, failures - 1)), MAX_UNKNOWN_COOLDOWN)

@@ -13,11 +13,12 @@ from app.inbound import ConversationRef, InboundEvent, PlatformFacts, Sender, Se
 from app.inbound import pipeline
 from app.adapters.onebot_v11.store.action_tracker import onebot_action_tracker
 from app.adapters.onebot_v11.store.role_store import (
-    UNKNOWN_COOLDOWN as _BOT_GROUP_ROLE_COOLDOWN,
+    ROLE_TTL as _BOT_GROUP_ROLE_TTL,
     VALID_GROUP_ROLES as _VALID_GROUP_ROLES,
     get_cached_bot_role,
     normalize_group_role,
     remember_bot_role,
+    unknown_cooldown,
 )
 
 
@@ -31,8 +32,8 @@ _BOT_GROUP_ROLE_CACHE: Dict[tuple[int, int], tuple[str, float]] = {}
 # 用于针对单群的 API 请求进行多协程并发防抖与排队保护，防止突发流量轰炸 API
 _BOT_GROUP_ROLE_LOCKS: Dict[tuple[int, int], asyncio.Lock] = {}
 
-# 正常的缓存有效期为 10 分钟 (600秒)
-_BOT_GROUP_ROLE_TTL = 600.0
+# 接口查不到身份的记录：(group_id, self_id) -> (连续失败次数, 最近失败时间)，冷却随失败次数加长
+_BOT_GROUP_ROLE_FAILURES: Dict[tuple[int, int], tuple[int, float]] = {}
 
 
 def _cache_bot_group_role_from_event(event: Dict[str, Any]) -> Optional[str]:
@@ -173,16 +174,12 @@ async def _fetch_and_cache_self_role(
     self_id: Optional[int],
     sender: Any,
 ):
-    """
-    异步获取并缓存 Bot 自身的群身份。
-    
-    【核心设计考量 - 首席架构师保障方案】：
-    1. 全局共享：改用全局进程级 `_BOT_GROUP_ROLE_CACHE`，让该群内的所有用户发消息时能够瞬时共享同一个 Bot 角色缓存。
-    2. 并发防抖 (Double-Checked Locking)：对于瞬间爆发的多协程群消息，利用各群专属的 `asyncio.Lock` 进行排队限制。
-       协程在获得锁后，二次检查缓存状态，确保对于并发流量，同一秒内最多只会有 1 次物理网络请求到达 OneBot。
-    3. 失败冷却退避 (Fallback & Cooldown)：若 OneBot 偶尔超时或限频报错，写入 "unknown" 标识，并在接下来的 60s 内
-       拒绝一切针对该群的网络 API 获取请求。此冷却期内的请求会直接优雅降级为安全 fallback 值 "member"，
-       彻底断绝“请求失败 -> 每次消息都再次强制重试 -> 永久陷入超频被封禁”的恶性网络雪崩。
+    """取 Bot 在群里的身份，写进 ``platform_state["self_role"]``。
+
+    身份主要靠事件得知：Bot 自己发言的回显带 sender.role，被设/取消管理员有
+    group_admin 通知；两者都会更新进程内缓存和持久化缓存。接口只在缓存过期
+    （6 小时）时核对一次，查不到时沿用上次知道的身份；一直查不到就按 60s、
+    120s……最长 30 分钟退避，只有第一次失败记警告。
     """
     if message_type != "group" or not group_id or not self_id:
         return
@@ -196,7 +193,6 @@ async def _fetch_and_cache_self_role(
         return
 
     cache_key = (g_id, s_id)
-    now = time.time()
 
     event_role = normalize_group_role(
         (session_ctx.platform_state.get("onebot_last_self_sent") or {}).get("sender_role")
@@ -206,38 +202,34 @@ async def _fetch_and_cache_self_role(
         session_ctx.platform_state["self_role"] = event_role
         return
 
-    # 1. 尝试首轮从全局缓存快速读取 (Lock-Free Fast Path)
+    def cooling_down() -> bool:
+        failed = _BOT_GROUP_ROLE_FAILURES.get(cache_key)
+        return bool(failed) and time.time() - failed[1] < unknown_cooldown(failed[0])
+
+    def fallback() -> str:
+        return get_cached_bot_role(_BOT_GROUP_ROLE_CACHE, g_id, s_id, allow_stale=True) or "member"
+
     cached_role = get_cached_bot_role(_BOT_GROUP_ROLE_CACHE, g_id, s_id, ttl=_BOT_GROUP_ROLE_TTL)
     if cached_role:
         session_ctx.platform_state["self_role"] = cached_role
         return
-    if cache_key in _BOT_GROUP_ROLE_CACHE:
-        role, ts = _BOT_GROUP_ROLE_CACHE[cache_key]
-        if role == "unknown" and (now - ts < _BOT_GROUP_ROLE_COOLDOWN):
-            # 处于失败退避冷却期内，直接安全降级为 member，不发任何网络请求
-            session_ctx.platform_state["self_role"] = "member"
-            return
+    if cooling_down():
+        session_ctx.platform_state["self_role"] = fallback()
+        return
 
-    # 2. 动态初始化该群专属的并发协程排队锁
-    if cache_key not in _BOT_GROUP_ROLE_LOCKS:
-        _BOT_GROUP_ROLE_LOCKS[cache_key] = asyncio.Lock()
-    lock = _BOT_GROUP_ROLE_LOCKS[cache_key]
-
-    # 3. 申请锁进入临界保护区，开始防抖处理
+    # 同一群的并发消息排队，同一时刻最多一次接口请求
+    lock = _BOT_GROUP_ROLE_LOCKS.setdefault(cache_key, asyncio.Lock())
     async with lock:
-        now = time.time()
-        # 4. 二次检查缓存 (Double-Checked Locking)
         cached_role = get_cached_bot_role(_BOT_GROUP_ROLE_CACHE, g_id, s_id, ttl=_BOT_GROUP_ROLE_TTL)
         if cached_role:
             session_ctx.platform_state["self_role"] = cached_role
             return
-        if cache_key in _BOT_GROUP_ROLE_CACHE:
-            role, ts = _BOT_GROUP_ROLE_CACHE[cache_key]
-            if role == "unknown" and (now - ts < _BOT_GROUP_ROLE_COOLDOWN):
-                session_ctx.platform_state["self_role"] = "member"
-                return
+        if cooling_down():
+            session_ctx.platform_state["self_role"] = fallback()
+            return
 
-        # 5. 执行物理网络 API 调用，外层包装 Try-Except 及严格 Timeout，确保极致健壮性
+        error: Optional[Exception] = None
+        role_val: Optional[str] = None
         try:
             from app.adapters.onebot_v11.tools.utils import fetch_group_member_role
 
@@ -249,20 +241,48 @@ async def _fetch_and_cache_self_role(
                 no_cache=False,
                 timeout=2.0,
             )
-            if role_val:
-                remember_bot_role(_BOT_GROUP_ROLE_CACHE, g_id, s_id, role_val, source="api")
-                session_ctx.platform_state["self_role"] = role_val
-                logger.info(f"已通过 OneBot API 获取并全局缓存 Bot({s_id}) 在群({g_id}) 的权限: {role_val}")
-            else:
-                # 记录失败状态，触发 Cooldown，并安全 fallback 到 member
-                _BOT_GROUP_ROLE_CACHE[cache_key] = ("unknown", time.time())
-                session_ctx.platform_state["self_role"] = "member"
-                logger.warning(f"获取 Bot({s_id}) 自身群({g_id}) 权限所有接口均无有效响应，已进入 60s 重试冷却退避。")
         except Exception as e:
-            # 无论网络抖动、超时或 OneBot 崩塌，统一在此处捕获，写入 unknown 冷却状态，fallback 保障系统平稳运行
-            _BOT_GROUP_ROLE_CACHE[cache_key] = ("unknown", time.time())
-            session_ctx.platform_state["self_role"] = "member"
-            logger.error(f"获取 Bot({s_id}) 自身群({g_id}) 权限发生异常: {e}，已进入 60s 重试冷却退避。")
+            error = e
+        if role_val:
+            _BOT_GROUP_ROLE_FAILURES.pop(cache_key, None)
+            remember_bot_role(_BOT_GROUP_ROLE_CACHE, g_id, s_id, role_val, source="api")
+            session_ctx.platform_state["self_role"] = role_val
+            logger.info(f"已通过 OneBot API 获取并全局缓存 Bot({s_id}) 在群({g_id}) 的权限: {role_val}")
+            return
+
+        failures = _BOT_GROUP_ROLE_FAILURES.get(cache_key, (0, 0.0))[0] + 1
+        _BOT_GROUP_ROLE_FAILURES[cache_key] = (failures, time.time())
+        role = fallback()
+        session_ctx.platform_state["self_role"] = role
+        reason = f"发生异常: {error}" if error else "所有接口均无有效响应"
+        message = (
+            f"获取 Bot({s_id}) 自身群({g_id}) 权限{reason}，暂按 {role} 处理，"
+            f"{unknown_cooldown(failures):.0f}s 后再试（第 {failures} 次）"
+        )
+        # 连续失败只在第一次提醒；之后的重试结果留在调试日志里
+        if failures == 1:
+            logger.warning(message)
+        else:
+            logger.debug(message)
+
+
+def _remember_role_from_notice(event: Dict[str, Any]) -> Optional[str]:
+    """group_admin 通知：Bot 自己被设为/取消管理员时直接更新身份缓存。"""
+    if event.get("notice_type") != "group_admin":
+        return None
+    try:
+        g_id, s_id, user_id = int(event.get("group_id")), int(event.get("self_id")), int(event.get("user_id"))
+    except (TypeError, ValueError):
+        return None
+    if user_id != s_id:
+        return None
+    role = {"set": "admin", "unset": "member"}.get(str(event.get("sub_type") or ""))
+    if not role:
+        return None
+    _BOT_GROUP_ROLE_FAILURES.pop((g_id, s_id), None)
+    remember_bot_role(_BOT_GROUP_ROLE_CACHE, g_id, s_id, role, source="notice")
+    logger.info(f"收到群管理变动通知，Bot({s_id}) 在群({g_id}) 的权限更新为: {role}")
+    return role
 
 
 def _log_onebot_non_message(event: Dict[str, Any]) -> None:
@@ -456,6 +476,8 @@ async def handle_onebot_event(event: Dict[str, Any], account_id: str = "default"
         binding.event = event
         logger.info(f"OneBot 收到戳一戳: target={target_id}")
     elif post_type != "message":
+        if post_type == "notice":
+            _remember_role_from_notice(event)
         _log_onebot_non_message(event)
         return
 
