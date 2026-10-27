@@ -12,7 +12,7 @@ from websockets.asyncio.client import ClientConnection
 
 from app.logger import setup_logger
 from app.adapters.onebot_v11.config import onebot_v11_config
-from app.adapters.onebot_v11.handlers import handle_onebot_event
+from app.adapters.onebot_v11.handlers import dispatch_onebot_event
 from app.adapters.onebot_v11.network.senders import parse_onebot_echo
 from app.adapters.onebot_v11.store.action_tracker import onebot_action_tracker
 from app.conversation.session import conversations
@@ -171,7 +171,7 @@ class OneBotV11WsClient:
             return
 
         if "post_type" in data:
-            await handle_onebot_event(data, account_id=self.account_id)
+            await dispatch_onebot_event(data, account_id=self.account_id)
             return
 
         if "status" in data and "echo" in data:

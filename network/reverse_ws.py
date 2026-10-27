@@ -4,7 +4,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.logger import setup_logger
 from app.adapters.onebot_v11.config import onebot_v11_config
-from app.adapters.onebot_v11.handlers import handle_onebot_event
+from app.adapters.onebot_v11.handlers import dispatch_onebot_event
 from app.adapters.onebot_v11.network.senders import parse_onebot_echo
 from app.adapters.onebot_v11.store.action_tracker import onebot_action_tracker
 from app.conversation.session import conversations
@@ -106,7 +106,7 @@ async def _onebot_v11_reverse_ws(websocket: WebSocket, account_id: str):
                 continue
 
             if "post_type" in data:
-                await handle_onebot_event(data, account_id=account_id)
+                await dispatch_onebot_event(data, account_id=account_id)
                 continue
 
             if "status" in data and "echo" in data:

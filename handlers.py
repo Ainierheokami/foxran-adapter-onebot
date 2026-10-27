@@ -503,3 +503,36 @@ async def handle_onebot_event(event: Dict[str, Any], account_id: str = "default"
         ),
         raw_event=event,
     ))
+
+
+def _event_key(event: Dict[str, Any], account_id: str) -> str:
+    """Events of one conversation run in order; different conversations do not wait on each other."""
+    group_id = event.get("group_id")
+    if group_id:
+        return f"{account_id}:group:{group_id}"
+    user_id = event.get("user_id") or event.get("target_id")
+    if user_id:
+        return f"{account_id}:private:{user_id}"
+    return f"{account_id}:other"
+
+
+try:
+    from app.inbound.dispatch import OrderedDispatcher
+
+    _dispatcher: Optional[OrderedDispatcher] = OrderedDispatcher("OneBot")
+except ImportError:  # 宿主低于 4.8.43：退回逐个处理
+    _dispatcher = None
+
+
+async def dispatch_onebot_event(event: Dict[str, Any], account_id: str = "default") -> None:
+    """Called from the receive loop: hand the event off so the loop keeps reading.
+
+    The replies to our own API calls (``echo``) arrive on the same socket. Awaiting
+    the event here meant every call made while handling it (the bot's group role,
+    a quoted message) could only time out, and a long command stalled the account.
+    """
+    if _dispatcher is None:
+        await handle_onebot_event(event, account_id=account_id)
+        return
+    _dispatcher.submit(_event_key(event, account_id), lambda: handle_onebot_event(event, account_id=account_id))
+
