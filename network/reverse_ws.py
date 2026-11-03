@@ -5,7 +5,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.logger import setup_logger
 from app.adapters.onebot_v11.config import onebot_v11_config
 from app.adapters.onebot_v11.handlers import dispatch_onebot_event
-from app.adapters.onebot_v11.network.senders import parse_onebot_echo
+from app.adapters.onebot_v11.network.senders import log_action_response, parse_onebot_echo
 from app.adapters.onebot_v11.store.action_tracker import onebot_action_tracker
 from app.conversation.session import conversations
 
@@ -110,7 +110,7 @@ async def _onebot_v11_reverse_ws(websocket: WebSocket, account_id: str):
                 continue
 
             if "status" in data and "echo" in data:
-                logger.debug(f"OneBot 动作响应: {data.get('status')}, echo={data.get('echo')}")
+                log_action_response(data)
                 onebot_action_tracker.resolve(data.get("echo"), data)
                 session_id, outgoing_message_id = parse_onebot_echo(data.get("echo"))
                 platform_message_id = None

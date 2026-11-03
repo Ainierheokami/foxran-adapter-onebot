@@ -11,8 +11,9 @@ from urllib.parse import unquote, urlparse
 from starlette.websockets import WebSocketState
 
 from app.logger import setup_logger
-from app.message import ExtensionSegment, File, MessageChain, Reply, Segment, segment_registry
+from app.message import ExtensionSegment, File, MessageChain, Reply, Segment, Video, Voice, segment_registry
 from app.outbound import OutboundMessage, RecallRefused
+from app.adapters.onebot_v11.store.action_tracker import onebot_action_tracker
 
 
 logger = setup_logger(__name__)
@@ -38,6 +39,32 @@ def _file_name_from_source(source: str) -> str:
 
 
 DEFAULT_SEND_INTERVAL_MS = 400
+# How long a send waits for the implementation's verdict. Text is answered at
+# once; a video or voice is downloaded and uploaded before the answer comes.
+# No answer in time is not a failure: some implementations never answer.
+RESPONSE_WAIT_SECONDS = 8.0
+MEDIA_RESPONSE_WAIT_SECONDS = 90.0
+# QQ only takes a video or voice as a message of its own.
+_STANDALONE = (Video, Voice)
+
+
+class OneBotSendRejected(RuntimeError):
+    """The OneBot implementation answered a send with a failure."""
+
+
+def _refusal(response: Dict[str, Any]) -> str:
+    detail = response.get("wording") or response.get("message") or response.get("msg") or ""
+    retcode = response.get("retcode")
+    text = str(detail).strip() or "平台没有说原因"
+    return f"{text}（retcode={retcode}）" if retcode is not None else text
+
+
+def log_action_response(data: Dict[str, Any]) -> None:
+    status = data.get("status")
+    if status in ("ok", "success", "async"):
+        logger.debug(f"OneBot 动作响应: {status}, echo={data.get('echo')}")
+    else:
+        logger.warning(f"OneBot 动作响应: {status}, {_refusal(data)}, echo={data.get('echo')}")
 
 
 def _send_interval_seconds(account_id: str) -> float:
@@ -152,7 +179,7 @@ class OneBotOutboundPort:
             raise RecallRefused((response or {}).get("msg") or "OneBot 实现没有确认撤回")
 
     def encode(self, session_ctx: Any, segments: MessageChain) -> OutboundMessage:
-        """CQ text per message part; files become their own upload actions."""
+        """CQ text per message part; files become upload actions, videos and voices messages of their own."""
         from app.adapters.onebot_v11.adapter import OneBotAdapter
 
         adapter = OneBotAdapter()
@@ -170,6 +197,10 @@ class OneBotOutboundPort:
             if isinstance(seg, File):
                 flush()
                 parts.append(("file", seg))
+            elif isinstance(seg, _STANDALONE):
+                # Text, @ and quotes go out first; the video follows on its own.
+                flush()
+                parts.append(("media", adapter.to_platform_format(MessageChain([seg]))))
             else:
                 run.append(seg)
         flush()
@@ -190,14 +221,26 @@ class OneBotOutboundPort:
         pace_key = (str(account_id), f"{'group' if conversation.is_group else 'private'}:{conversation.id}")
         interval = _send_interval_seconds(account_id)
 
-        async def send(action: str, params: Dict[str, Any]) -> None:
+        refused: List[str] = []
+
+        async def send(action: str, params: Dict[str, Any], *, what: str = "", wait: float = RESPONSE_WAIT_SECONDS) -> None:
             nonlocal action_index
-            action_echo = echo if action_index == 0 else None
+            action_echo = (echo if action_index == 0 else None) or f"action:{uuid.uuid4().hex}"
             action_index += 1
             await self._pacer.wait_turn(pace_key, interval)
+            answer = onebot_action_tracker.expect(action_echo)
             try:
-                await self.send_action(account_id, action, params, echo=action_echo)
+                if not await self.send_action(account_id, action, params, echo=action_echo):
+                    refused.append(f"{what or '消息'}没发出去：OneBot 账号 {account_id} 没连上")
+                    return
+                try:
+                    response = await asyncio.wait_for(answer, timeout=wait)
+                except asyncio.TimeoutError:
+                    return
+                if isinstance(response, dict) and response.get("status") not in ("ok", "success", "async"):
+                    refused.append(f"{what or '消息'}被平台拒收：{_refusal(response)}")
             finally:
+                onebot_action_tracker.discard(action_echo)
                 self._pacer.mark_sent(pace_key)
 
         # The whole message (text parts and file uploads) holds the conversation's
@@ -208,15 +251,26 @@ class OneBotOutboundPort:
             for kind, item in message.payload:
                 if kind == "message":
                     if item.strip():
-                        await send(message_action, {**target, "message": item})
+                        await send(message_action, {**target, "message": item}, what="文字")
+                    continue
+                if kind == "media":
+                    what = "视频" if item.startswith("[CQ:video") else "语音"
+                    await send(message_action, {**target, "message": item}, what=what, wait=MEDIA_RESPONSE_WAIT_SECONDS)
                     continue
                 source = item.media.file or item.media.url
                 if source:
-                    await send(upload_action, {**target, "file": source, "name": item.name or _file_name_from_source(source)})
+                    await send(
+                        upload_action,
+                        {**target, "file": source, "name": item.name or _file_name_from_source(source)},
+                        what="文件", wait=MEDIA_RESPONSE_WAIT_SECONDS,
+                    )
                 else:
                     logger.warning("OneBot 文件发送已跳过：文件片段缺少 file/url")
             if action_index == 0 and message.text.strip():
-                await send(message_action, {**target, "message": message.text})
+                await send(message_action, {**target, "message": message.text}, what="文字")
+        if refused:
+            # The framework marks the reply as not delivered, with this reason.
+            raise OneBotSendRejected("；".join(refused))
         return None
 
 

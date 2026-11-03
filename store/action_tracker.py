@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import uuid
@@ -34,6 +34,15 @@ class OneBotActionTracker:
             logger.debug(f"OneBot 动作响应超时: {action}")
             self._pending.pop(echo, None)
             return None
+
+    def expect(self, echo: str) -> asyncio.Future:
+        """Register an echo whose action response the caller will await itself."""
+        future = asyncio.get_running_loop().create_future()
+        self._pending[echo] = future
+        return future
+
+    def discard(self, echo: str) -> None:
+        self._pending.pop(echo, None)
 
     def resolve(self, echo: Any, data: Any) -> None:
         if not echo:
