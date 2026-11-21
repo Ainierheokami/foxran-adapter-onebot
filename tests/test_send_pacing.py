@@ -97,6 +97,19 @@ def test_a_video_goes_out_as_a_message_of_its_own():
     assert message.payload == [("message", "捏好啦 "), ("media", "[CQ:video,file=https://x/v.mp4]"), ("message", "看看")]
 
 
+def test_a_voice_from_a_url_is_sent_with_file():
+    # OneBot v11 发语音只认 file；只写 url 的话实现端收不到音频
+    from app.message import MessageChain, Voice
+    from app.message.segments import MediaRef
+
+    session = SimpleNamespace(session_id="s1", log=SimpleNamespace(platform_id_of=lambda _id: None))
+    message = senders.OneBotOutboundPort().encode(
+        session, MessageChain([Voice(media=MediaRef(url="https://x/api/media/cache/abc"))])
+    )
+
+    assert message.payload == [("media", "[CQ:record,file=https://x/api/media/cache/abc]")]
+
+
 async def test_a_refused_send_is_reported_with_the_platform_reason(port):
     refuse = {"status": "failed", "retcode": 1200, "wording": 'message element "video" must be the only segment'}
     port.answer = lambda message: refuse if message.startswith("[CQ:video") else {"status": "ok", "retcode": 0}

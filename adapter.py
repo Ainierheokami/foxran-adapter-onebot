@@ -304,10 +304,10 @@ class OneBotAdapter(BasePlatformAdapter):
             return f"[CQ:reply,id={reply_id}]"
         if isinstance(seg, Voice):
             params = []
-            if seg.media.file:
-                params.append(f"file={seg.media.file}")
-            if seg.media.url:
-                params.append(f"url={seg.media.url}")
+            voice_source = seg.media.file or seg.media.url
+            if voice_source:
+                # 跟视频一样：OneBot v11 发送时只认 file（可以是网址），url 只出现在收到的消息里
+                params.append(f"file={voice_source}")
             if seg.duration is not None:
                 params.append(f"duration={seg.duration}")
             return f"[CQ:record,{','.join(params)}]" if params else "[CQ:record]"
