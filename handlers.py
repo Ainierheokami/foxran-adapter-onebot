@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Dict, Optional
 import re
 import json
 import asyncio
@@ -14,7 +14,6 @@ from app.inbound import pipeline
 from app.adapters.onebot_v11.store.action_tracker import onebot_action_tracker
 from app.adapters.onebot_v11.store.role_store import (
     ROLE_TTL as _BOT_GROUP_ROLE_TTL,
-    VALID_GROUP_ROLES as _VALID_GROUP_ROLES,
     get_cached_bot_role,
     normalize_group_role,
     remember_bot_role,

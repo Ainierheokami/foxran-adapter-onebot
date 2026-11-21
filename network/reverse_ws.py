@@ -1,5 +1,7 @@
 ﻿from __future__ import annotations
 
+import hmac
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.logger import setup_logger
@@ -58,7 +60,8 @@ def _auth_ok(websocket: WebSocket, account_id: str) -> bool:
     expected = (cfg.get("access_token") or "").strip()
     if not expected:
         return False
-    return _extract_token(websocket) == expected
+    # 定长比较，不让响应时间泄露令牌前缀
+    return hmac.compare_digest((_extract_token(websocket) or "").encode("utf-8"), expected.encode("utf-8"))
 
 
 async def _onebot_v11_reverse_ws(websocket: WebSocket, account_id: str):
